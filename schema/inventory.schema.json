@@ -164,6 +164,24 @@
         "default_encrypted": {
           "type": "boolean",
           "default": false
+        },
+        "osd_data_disk_size_gb": {
+          "type": "integer",
+          "minimum": 10,
+          "default": 2048,
+          "description": "Per-VM data-disk size for OSD nodes. Disk COUNT equals len(data_devices) on each node; SIZE comes from this field. Defaults to 2 TB (IDC baseline)."
+        },
+        "osd_db_disk_size_gb": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 100,
+          "description": "Per-VM BlueStore DB-disk size. Ceph guidance: 1-4% of data size, minimum ~30 GiB. 0 = co-locate DB with data device. Default 100 GB suits 2 TB data HDDs."
+        },
+        "osd_wal_disk_size_gb": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Per-VM separate WAL-disk size. Rare — usually 0 (WAL co-locates with DB)."
         }
       }
     },
