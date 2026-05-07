@@ -82,9 +82,51 @@
           "cpu": { "type": "integer", "minimum": 1, "default": 2 },
           "memory_gb": { "type": "integer", "minimum": 1, "default": 4 },
           "disk_gb": { "type": "integer", "minimum": 10, "default": 40 },
+          "data_devices": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^/dev/" },
+            "description": "OSD-only. BlueStore data devices (typically HDDs in a hybrid cluster). Required when roles includes ceph-osd."
+          },
+          "db_devices": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^/dev/" },
+            "description": "OSD-only. Optional BlueStore DB devices (rocksdb). Recommended for HDD-backed OSDs — typically a faster SSD/NVMe."
+          },
+          "wal_devices": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^/dev/" },
+            "description": "OSD-only. Optional separate WAL location. Rare; usually shares db_devices."
+          },
+          "osds_per_device": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16,
+            "default": 1,
+            "description": "OSD-only. OSD daemons per data device. >1 for very high-IOPS NVMe."
+          },
+          "osd_encrypted": {
+            "type": "boolean",
+            "default": false,
+            "description": "OSD-only. Enable dm-crypt encryption-at-rest."
+          },
+          "device_class": {
+            "enum": ["auto", "hdd", "ssd", "nvme"],
+            "default": "auto",
+            "description": "OSD-only. CRUSH device class — used for tier-aware pool placement rules."
+          },
           "storage_devices": {
             "type": "array",
-            "items": { "type": "string", "pattern": "^/dev/" }
+            "items": { "type": "string", "pattern": "^/dev/" },
+            "description": "Deprecated: backward-compat alias for data_devices."
+          },
+          "datastore": {
+            "type": "string",
+            "description": "Per-node override of target.datastore. Used to distribute VMs across physical arrays for fault tolerance (Ceph mon quorum, etc.). Blank = inherit cluster-level value."
+          },
+          "disk_provisioning": {
+            "enum": ["thin", "thick", "thick-eager"],
+            "default": "thin",
+            "description": "Virtual disk allocation strategy. thin=sparse, thick=preallocated lazy-zero, thick-eager=preallocated + zeroed at create (recommended for Ceph OSD data disks; ESXi-only — falls back to thick on libvirt/Proxmox)."
           },
           "ssh_authorized_keys": { "type": "array", "items": { "type": "string" } }
         }
@@ -101,6 +143,27 @@
         "pools": {
           "type": "array",
           "items": { "enum": ["rbd", "cephfs", "rgw"] }
+        },
+        "replication": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 3,
+          "description": "Default replica count for the RBD/CephFS pools the wizard creates."
+        },
+        "failure_domain": {
+          "enum": ["host", "rack", "chassis", "osd"],
+          "default": "host",
+          "description": "CRUSH bucket Ceph spreads replicas across. 'host' is standard; 'rack'/'chassis' need pre-configured CRUSH topology."
+        },
+        "default_osds_per_device": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "default_encrypted": {
+          "type": "boolean",
+          "default": false
         }
       }
     },

@@ -6,7 +6,9 @@
 # Order matters in Ceph day-1:
 #   1. host registration (this file's first N docs)
 #   2. mon/mgr/mds placement by label
-#   3. OSD spec (waits for hosts to advertise the device paths)
+#   3. OSD spec(s) — emitted PER UNIQUE OSD shape so that nodes with
+#      different data/db/wal layouts get their own service_id and
+#      cephadm doesn't try to reconcile heterogeneous specs into one.
 #   4. RGW (only after OSDs are up+in — see install playbook)
 
 {{- range .Nodes }}
@@ -40,25 +42,46 @@ placement:
   label: mds
   count: {{ .Counts.Mds }}
 {{- end }}
+
+{{- /*  OSD specs — group OSD nodes by their (data, db, wal, encrypted,
+        osds_per_device, device_class) signature. Each unique signature
+        becomes its own cephadm service_id. */ -}}
+{{- range $i, $osd := .OSD.SpecGroups }}
 ---
-# ── OSD: BlueStore with separate WAL/DB ─────────────────────
 service_type: osd
-service_id: all-osds
+service_id: osds-{{ add $i 1 }}{{ if $osd.DeviceClass }}-{{ $osd.DeviceClass }}{{ end }}
 placement:
-  label: osd
+  hosts:
+{{- range $osd.Hosts }}
+    - {{ . }}
+{{- end }}
 spec:
   data_devices:
     paths:
-{{- range .OSD.DataDevices }}
+{{- range $osd.DataDevices }}
       - {{ . }}
 {{- end }}
+{{- if $osd.DBDevices }}
   db_devices:
     paths:
-{{- range .OSD.DBDevices }}
+{{- range $osd.DBDevices }}
       - {{ . }}
 {{- end }}
-  osds_per_device: 1
-  encrypted: false
+{{- end }}
+{{- if $osd.WALDevices }}
+  wal_devices:
+    paths:
+{{- range $osd.WALDevices }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+  osds_per_device: {{ $osd.OSDsPerDevice }}
+  encrypted: {{ $osd.Encrypted }}
+{{- if $osd.DeviceClass }}
+  crush_device_class: {{ $osd.DeviceClass }}
+{{- end }}
+{{- end }}
+
 {{- if .Counts.Rgw }}
 ---
 # ── RGW: S3 endpoint (HA) ──────────────────────────────────
