@@ -15,7 +15,11 @@ provider "libvirt" {
 variable "libvirt_uri"     { type = string }
 variable "pool"            { type = string; default = "default" }
 variable "network_id"      { type = string }
-variable "base_volume_id"  { type = string; description = "ID of pre-uploaded openSUSE/MicroOS image" }
+variable "base_volume_id"  {
+  type        = string
+  default     = ""
+  description = "Stack-level fallback base qcow2 ID — used for nodes whose own base_volume_id is empty. Empty everywhere → kernel-boot domains get blank volumes (correct for Agama)."
+}
 
 # Driven from inventory.yaml via `terraform apply -var-file=tfvars.json`
 # (the Windows installer writes tfvars.json from the inventory).
@@ -28,10 +32,16 @@ variable "nodes" {
     extra_disks_gb = list(number)
     seed_iso_path  = string
     mac            = optional(string)
+    pool           = optional(string, "")       # per-node libvirt storage pool override
+    disk_format    = optional(string, "qcow2")   # qcow2=thin, raw=thick
     boot_mode      = optional(string, "iso")    # "iso" (Combustion) or "kernel" (Agama)
     kernel_path    = optional(string, "")
     initrd_path    = optional(string, "")
     cmdline        = optional(string, "")
+    # Per-node base qcow2 override. Empty → fall back to stack base_volume_id,
+    # which itself may be empty for an all-Agama cluster. MicroOS nodes MUST
+    # have a non-empty value (their own or the stack default).
+    base_volume_id = optional(string, "")
   }))
 }
 
@@ -45,9 +55,13 @@ module "vm" {
   disk_gb        = each.value.disk_gb
   extra_disks_gb = each.value.extra_disks_gb
   seed_iso_path  = each.value.seed_iso_path
-  base_volume_id = var.base_volume_id
+  # Per-node base qcow2 wins; falls back to the stack-level default; both
+  # may be empty for all-Agama clusters (kernel boot needs no base image).
+  base_volume_id = each.value.base_volume_id != "" ? each.value.base_volume_id : var.base_volume_id
   network_id     = var.network_id
-  pool           = var.pool
+  # Per-node pool override falls back to the stack-level default pool.
+  pool           = each.value.pool != "" ? each.value.pool : var.pool
+  disk_format    = each.value.disk_format
   mac            = each.value.mac
 
   boot_mode      = each.value.boot_mode
