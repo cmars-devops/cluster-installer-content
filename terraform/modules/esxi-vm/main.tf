@@ -21,16 +21,18 @@ variable "datastore"      { type = string }
 # Datastore that hosts the ISOs we attach as CD-ROMs (seed + base).
 variable "iso_datastore"  { type = string }
 
-# Datastore-relative path to the seed ISO uploaded by the orchestrator
-# pre-TF — Combustion+Ignition for MicroOS, Agama remastered netinstall
-# for Leap/Tumbleweed (when ISO remaster ships) or empty.
+# Datastore-relative path to the seed ISO. Always present:
+#   MicroOS  → Combustion+Ignition (this is the install payload itself).
+#   Agama    → secondary CD carrying SSH keys / hostname / first-boot
+#              hooks; the primary install media is install_iso_path.
 # Format: "cluster-installer/<run-id>/seed-<host>.iso"
 variable "seed_iso_path"  { type = string }
 
-# Datastore-relative path to the base install ISO. Empty for pure
-# Combustion flows (MicroOS qcow2-equivalent), filled for Agama where
-# the kernel-boot still needs the squashfs available locally.
-variable "base_iso_path"  { type = string; default = "" }
+# Datastore-relative path to the per-node Agama-remastered netinstall
+# ISO. Empty for MicroOS. When set this is mounted as the FIRST cdrom
+# (boot order picks it ahead of the seed disk) so the bootloader's
+# rewritten cmdline drives the install.
+variable "install_iso_path" { type = string; default = "" }
 
 variable "network"        { type = string; description = "vSphere port-group name" }
 variable "mac"            { type = string; default = "" }
@@ -126,19 +128,29 @@ resource "vsphere_virtual_machine" "vm" {
     }
   }
 
-  # Seed ISO — Combustion+Ignition (MicroOS) or remastered Agama
-  # netinstall (Leap/Tumbleweed). Always attached even when empty so a
-  # second 'cdrom' block doesn't shift unit_numbers between Apply runs.
+  # CD-ROM 1 — primary boot media.
+  # Agama nodes: the per-node remastered netinstall ISO (kernel cmdline
+  # carries inst.auto pointing at the orchestrator's HTTP profile).
+  # MicroOS nodes: the Combustion seed ISO (one CD-ROM is enough — the
+  # qcow2 backing handles the install payload and Combustion provides
+  # first-boot config).
   cdrom {
     datastore_id = data.vsphere_datastore.ds.id
-    path         = var.seed_iso_path != "" ? var.seed_iso_path : "isos/empty.iso"
+    path         = var.install_iso_path != "" ? var.install_iso_path : var.seed_iso_path
   }
 
-  # Direct kernel boot is not available on vSphere the way libvirt does
-  # it. Agama's only delivery path on ESXi is "remaster the ISO with
-  # inst.auto baked into grub.cfg" — that's the work item phase-1 §4
-  # tracks. Until that lands, ESXi support is MicroOS-only: the
-  # Combustion ISO above is sufficient for first-boot config.
+  # CD-ROM 2 — secondary, only for Agama nodes. Carries the Combustion
+  # script + SSH keys + hostname so the same first-boot script we use
+  # on libvirt continues to apply on ESXi. For MicroOS the install_iso
+  # path is empty and we'd be doubling up CD #1; skip the second drive
+  # via the dynamic block.
+  dynamic "cdrom" {
+    for_each = var.install_iso_path != "" ? [1] : []
+    content {
+      datastore_id = data.vsphere_datastore.ds.id
+      path         = var.seed_iso_path
+    }
+  }
 
   wait_for_guest_net_timeout = 30
   wait_for_guest_ip_timeout  = 30

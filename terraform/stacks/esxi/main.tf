@@ -38,7 +38,7 @@ variable "nodes" {
     disk_gb           = number
     extra_disks_gb    = list(number)
     seed_iso_path     = string                       # datastore-relative
-    base_iso_path     = optional(string, "")
+    install_iso_path  = optional(string, "")          # per-node Agama remaster (Leap/Tumbleweed)
     mac               = optional(string, "")
     datastore         = optional(string, "")          # per-node placement override
     iso_datastore     = optional(string, "")
@@ -58,7 +58,7 @@ module "vm" {
   disk_gb           = each.value.disk_gb
   extra_disks_gb    = each.value.extra_disks_gb
   seed_iso_path     = each.value.seed_iso_path
-  base_iso_path     = each.value.base_iso_path
+  install_iso_path  = each.value.install_iso_path
   mac               = each.value.mac
   disk_provisioning = each.value.disk_provisioning
   guest_id          = each.value.guest_id
