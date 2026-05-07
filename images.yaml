@@ -1,4 +1,12 @@
 schema_version: 1
+# Catalog of OS images the Windows installer downloads on demand. The
+# Go imagecache (app/internal/imagecache) is the only consumer; Step 3
+# of the wizard just picks an OS family and the orchestrator looks up
+# the highest-versioned matching entry here.
+#
+# Adding a new release: pick a key like "<family>-<version>" so that
+# lexicographic descending sort surfaces the newer one first
+# automatically (LookupForOS depends on this).
 images:
   microos-latest:
     family: microos
@@ -7,14 +15,36 @@ images:
     url: https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-ContainerHost-kvm-and-xen.qcow2
     checksum_url: https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-ContainerHost-kvm-and-xen.qcow2.sha256
     seed_format: ignition
+
+  # Leap 16.0 — first openSUSE Leap release that ships Agama as the
+  # default installer. The orchestrator's Agama profile templates
+  # (content/seeds/agama/leap.auto.json.tmpl) target this schema.
+  leap-16.0:
+    family: leap
+    version: "16.0"
+    arch: x86_64
+    type: agama-live
+    url: https://download.opensuse.org/distribution/leap/16.0/iso/openSUSE-Leap-16.0-NET-x86_64-Media.iso
+    checksum_url: https://download.opensuse.org/distribution/leap/16.0/iso/openSUSE-Leap-16.0-NET-x86_64-Media.iso.sha256
+    seed_format: agama
+
+  # Leap 15.6 — last AutoYaST-only release. Kept here for reference but
+  # marked autoyast so the orchestrator doesn't try the Agama profile
+  # path against it. Picked only when the operator explicitly pins
+  # version="15.6" in the inventory; LookupForOS with empty version
+  # always returns 16.0 (lexicographic descending).
   leap-15.6:
     family: leap
     version: "15.6"
     arch: x86_64
-    type: agama-live
+    type: autoyast-net
     url: https://download.opensuse.org/distribution/leap/15.6/iso/openSUSE-Leap-15.6-NET-x86_64-Media.iso
     checksum_url: https://download.opensuse.org/distribution/leap/15.6/iso/openSUSE-Leap-15.6-NET-x86_64-Media.iso.sha256
-    seed_format: agama
+    seed_format: autoyast
+
+  # Tumbleweed rolls; the .sha256 file changes whenever a new snapshot
+  # publishes, so the cache key rotates and re-extraction kicks in
+  # automatically. Acceptable for a rolling-distro test bench.
   tumbleweed-net:
     family: tumbleweed
     arch: x86_64
