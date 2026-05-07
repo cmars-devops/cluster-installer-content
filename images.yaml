@@ -1,0 +1,24 @@
+schema_version: 1
+images:
+  microos-latest:
+    family: microos
+    arch: x86_64
+    type: self-install
+    url: https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-ContainerHost-kvm-and-xen.qcow2
+    checksum_url: https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-ContainerHost-kvm-and-xen.qcow2.sha256
+    seed_format: ignition
+  leap-15.6:
+    family: leap
+    version: "15.6"
+    arch: x86_64
+    type: agama-live
+    url: https://download.opensuse.org/distribution/leap/15.6/iso/openSUSE-Leap-15.6-NET-x86_64-Media.iso
+    checksum_url: https://download.opensuse.org/distribution/leap/15.6/iso/openSUSE-Leap-15.6-NET-x86_64-Media.iso.sha256
+    seed_format: agama
+  tumbleweed-net:
+    family: tumbleweed
+    arch: x86_64
+    type: agama-live
+    url: https://download.opensuse.org/tumbleweed/iso/openSUSE-Tumbleweed-NET-x86_64-Current.iso
+    checksum_url: https://download.opensuse.org/tumbleweed/iso/openSUSE-Tumbleweed-NET-x86_64-Current.iso.sha256
+    seed_format: agama

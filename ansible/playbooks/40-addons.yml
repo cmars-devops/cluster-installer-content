@@ -1,0 +1,109 @@
+---
+# Day-2 essentials: MetalLB → Ingress (nginx or Traefik) → cert-manager →
+# kube-prometheus-stack → optional Argo CD.
+# MetalLB is a hard prerequisite for any LoadBalancer-typed service the
+# rest of the addons want, so it goes first.
+
+- name: Cluster add-ons
+  hosts: localhost
+  connection: local
+  vars:
+    kubeconfig: "{{ playbook_dir }}/../../runs/kubeconfig"
+    ingress_lb_ip: "{{ ingress_lb_ip | default('') }}"
+  tasks:
+    - name: Add helm repos
+      kubernetes.core.helm_repository:
+        name: "{{ item.name }}"
+        repo_url: "{{ item.url }}"
+      loop:
+        - { name: metallb,              url: "https://metallb.github.io/metallb" }
+        - { name: ingress-nginx,        url: "https://kubernetes.github.io/ingress-nginx" }
+        - { name: traefik,              url: "https://traefik.github.io/charts" }
+        - { name: jetstack,             url: "https://charts.jetstack.io" }
+        - { name: prometheus-community, url: "https://prometheus-community.github.io/helm-charts" }
+        - { name: argo,                 url: "https://argoproj.github.io/argo-helm" }
+
+    # ── MetalLB always first ─────────────────────────────────
+    - name: Install MetalLB
+      kubernetes.core.helm:
+        name: metallb
+        chart_ref: metallb/metallb
+        release_namespace: metallb-system
+        create_namespace: true
+        kubeconfig: "{{ kubeconfig }}"
+        wait: true
+        timeout: 5m
+
+    - name: Render MetalLB pools
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../manifests/metallb/pools.yaml.tmpl"
+        dest: "{{ playbook_dir }}/../../runs/metallb-pools.yaml"
+
+    - name: Apply MetalLB pools
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        src: "{{ playbook_dir }}/../../runs/metallb-pools.yaml"
+        state: present
+
+    # ── Ingress: nginx XOR traefik ───────────────────────────
+    - name: Install ingress-nginx
+      when: addons_ingress | default('ingress-nginx') == 'ingress-nginx'
+      kubernetes.core.helm:
+        name: ingress-nginx
+        chart_ref: ingress-nginx/ingress-nginx
+        release_namespace: ingress-nginx
+        create_namespace: true
+        kubeconfig: "{{ kubeconfig }}"
+        values_files: ["../../manifests/helm/ingress-nginx/values.yaml.tmpl"]
+        wait: true
+        timeout: 5m
+
+    - name: Install Traefik
+      when: addons_ingress | default('ingress-nginx') == 'traefik'
+      kubernetes.core.helm:
+        name: traefik
+        chart_ref: traefik/traefik
+        release_namespace: traefik
+        create_namespace: true
+        kubeconfig: "{{ kubeconfig }}"
+        values_files: ["../../manifests/helm/traefik/values.yaml.tmpl"]
+        wait: true
+        timeout: 5m
+
+    # ── cert-manager ─────────────────────────────────────────
+    - name: Install cert-manager
+      when: addons_cert_manager | default(true)
+      kubernetes.core.helm:
+        name: cert-manager
+        chart_ref: jetstack/cert-manager
+        release_namespace: cert-manager
+        create_namespace: true
+        kubeconfig: "{{ kubeconfig }}"
+        values_files: ["../../manifests/helm/cert-manager/values.yaml.tmpl"]
+        wait: true
+        timeout: 5m
+
+    # ── monitoring ───────────────────────────────────────────
+    - name: Install kube-prometheus-stack
+      when: addons_monitoring | default('kube-prometheus-stack') == 'kube-prometheus-stack'
+      kubernetes.core.helm:
+        name: kube-prometheus-stack
+        chart_ref: prometheus-community/kube-prometheus-stack
+        release_namespace: monitoring
+        create_namespace: true
+        kubeconfig: "{{ kubeconfig }}"
+        values_files: ["../../manifests/helm/kube-prometheus-stack/values.yaml.tmpl"]
+        wait: true
+        timeout: 10m
+
+    # ── GitOps (optional) ────────────────────────────────────
+    - name: Install Argo CD
+      when: addons_gitops | default('none') == 'argocd'
+      kubernetes.core.helm:
+        name: argocd
+        chart_ref: argo/argo-cd
+        release_namespace: argocd
+        create_namespace: true
+        kubeconfig: "{{ kubeconfig }}"
+        wait: true
+        timeout: 10m

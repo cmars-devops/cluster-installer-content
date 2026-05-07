@@ -1,0 +1,20 @@
+config:
+  vip_arp: "true"
+  vip_address: "{{ kube_vip }}"
+  vip_interface: ""           # autodetect
+  cp_enable: "true"
+  svc_enable: "true"
+  lb_enable: "true"
+  lb_pool: "{{ lb_pool }}"
+
+env:
+  vip_arp: "true"
+  vip_cidr: "32"
+
+nodeSelector:
+  node-role.kubernetes.io/control-plane: "true"
+
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule

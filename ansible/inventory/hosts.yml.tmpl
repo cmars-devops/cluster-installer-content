@@ -1,0 +1,95 @@
+# Rendered by the Windows installer (Go text/template) from inventory.yaml.
+# Group naming follows the upstream playbooks the installer wraps:
+#   rke2_servers / rke2_agents     ← rancher/rke2-ansible
+#   k3s_servers  / k3s_agents      ← k3s-io/k3s-ansible
+#   ceph_mons / ceph_mgrs / ceph_osds / ceph_rgws  ← our 10-ceph-cephadm.yml
+---
+all:
+  vars:
+    ansible_user: root
+    ansible_ssh_private_key_file: "{{ "{{" }} lookup('env','ANSIBLE_SSH_KEY_PATH') {{ "}}" }}"
+    cluster_name: {{ .Cluster.Name }}
+    cluster_domain: {{ .Cluster.Domain }}
+    pod_cidr: {{ .Network.PodCIDR }}
+    service_cidr: {{ .Network.ServiceCIDR }}
+    kube_vip: {{ .Network.VIP }}
+    kube_vip_interface: {{ .Network.PrimaryInterface | default "ens192" }}
+    lb_pool: {{ .Network.LBPool }}
+    ingress_lb_ip: {{ .Network.IngressLBIP }}
+    cni: {{ .Cluster.Kubernetes.CNI }}
+    {{- if eq .Cluster.Kubernetes.Distro "rke2" }}
+    rke2_version: {{ .Cluster.Kubernetes.Version }}
+    rke2_token: {{ .Secrets.RKE2Token }}
+    {{- else }}
+    k3s_version: {{ .Cluster.Kubernetes.Version }}
+    k3s_token: {{ .Secrets.K3sToken }}
+    {{- end }}
+    ceph_version: {{ .Ceph.Version | default "20.2.1" }}
+    ceph_release: {{ .Ceph.Release | default "tentacle" }}
+    ceph_cluster_network: {{ .Ceph.ClusterNetwork }}
+    rgw_realm: {{ .Ceph.RGWRealm | default "triangles" }}
+    dashboard_password: {{ .Secrets.CephDashboardPassword }}
+    addons_ingress: {{ .Addons.Ingress }}
+    addons_cert_manager: {{ .Addons.CertManager }}
+    addons_monitoring: {{ .Addons.Monitoring }}
+    addons_gitops: {{ .Addons.GitOps }}
+
+  children:
+    {{- /* Kubernetes groups (distro-aware) */ -}}
+    {{ if eq .Cluster.Kubernetes.Distro "rke2" }}
+    rke2_servers:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "control-plane" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}
+    rke2_agents:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "worker" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}
+    {{- else }}
+    k3s_servers:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "control-plane" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}
+    k3s_agents:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "worker" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}
+    {{- end }}
+
+    {{- /* Ceph groups */}}
+    ceph_mons:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "ceph-mon" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}
+    ceph_mgrs:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "ceph-mgr" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}
+    ceph_osds:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "ceph-osd" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+          devices: {{ .StorageDevicesJSON }}
+          {{- if .ClusterIP }}
+          cluster_ip: {{ .ClusterIP }}
+          {{- end }}
+        {{- end }}{{ end }}
+    ceph_rgws:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "ceph-rgw" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}

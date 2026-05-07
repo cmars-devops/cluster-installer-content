@@ -1,0 +1,32 @@
+{
+  "ignition": { "version": "3.4.0" },
+  "passwd": {
+    "users": [
+      {
+        "name": "root",
+        "sshAuthorizedKeys": [{{ range $i, $k := .Node.SSHAuthorizedKeys }}{{ if $i }}, {{ end }}{{ printf "%q" $k }}{{ end }}]
+      }
+    ]
+  },
+  "storage": {
+    "files": [
+      {
+        "path": "/etc/hostname",
+        "contents": { "source": {{ printf "%q" (printf "data:,%s" .Node.Hostname) }} },
+        "mode": 420,
+        "overwrite": true
+      },
+      {
+        "path": "/etc/sysctl.d/90-cluster.conf",
+        "contents": { "source": "data:,net.ipv4.ip_forward%3D1%0Anet.ipv6.conf.all.forwarding%3D1%0A" },
+        "mode": 420,
+        "overwrite": true
+      }
+    ]
+  },
+  "systemd": {
+    "units": [
+      { "name": "sshd.service", "enabled": true }
+    ]
+  }
+}

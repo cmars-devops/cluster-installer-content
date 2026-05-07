@@ -1,0 +1,16 @@
+controller:
+  kind: DaemonSet
+  service:
+    type: LoadBalancer
+    externalTrafficPolicy: Local
+  ingressClassResource:
+    name: nginx
+    enabled: true
+    default: true
+  config:
+    use-forwarded-headers: "true"
+    proxy-body-size: "32m"
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: false           # toggled on once kube-prometheus-stack is up

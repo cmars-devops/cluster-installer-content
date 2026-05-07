@@ -1,0 +1,21 @@
+{{- /* ceph-csi-rbd Helm values, rendered by Ansible from facts gathered in 30-csi-ceph.yml. */ -}}
+{{- /* Reference: P:\K3s@IDC\manifests\ceph-csi-rbd\values.yaml (production). */ -}}
+csiConfig:
+  - clusterID: "{{ '{{ ceph_cluster_fsid }}' }}"
+    monitors:
+{{- range .Cluster.Monitors }}
+      - "{{ . }}:3300"   # MON v2 endpoint
+{{- end }}
+    cephFS:
+      subvolumeGroup: "csi"
+
+nodeplugin:
+  tolerations:
+    - operator: Exists
+
+provisioner:
+  replicaCount: 2
+  tolerations:
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: Exists
+      effect: NoSchedule

@@ -1,0 +1,55 @@
+---
+# Ceph CSI RBD secret + StorageClass.
+# Rendered by 30-csi-ceph.yml after fetching the client.k8s-rbd keyring from
+# the first MON. Pattern adopted from P:\K3s@IDC\manifests\ceph-csi-rbd\storageclass.yaml.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: csi-rbd-secret
+  namespace: ceph-csi-rbd
+type: Opaque
+stringData:
+  userID: k8s-rbd
+  userKey: "{{ '{{ ceph_k8s_rbd_key }}' }}"
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ceph-rbd
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rbd.csi.ceph.com
+parameters:
+  clusterID: "{{ '{{ ceph_cluster_fsid }}' }}"
+  pool: rbd-pool
+  imageFormat: "2"
+  imageFeatures: layering
+  csi.storage.k8s.io/provisioner-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/provisioner-secret-namespace: ceph-csi-rbd
+  csi.storage.k8s.io/controller-expand-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/controller-expand-secret-namespace: ceph-csi-rbd
+  csi.storage.k8s.io/node-stage-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/node-stage-secret-namespace: ceph-csi-rbd
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+mountOptions:
+  - discard
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ceph-rbd-retain
+provisioner: rbd.csi.ceph.com
+parameters:
+  clusterID: "{{ '{{ ceph_cluster_fsid }}' }}"
+  pool: rbd-pool
+  imageFormat: "2"
+  imageFeatures: layering
+  csi.storage.k8s.io/provisioner-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/provisioner-secret-namespace: ceph-csi-rbd
+  csi.storage.k8s.io/controller-expand-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/controller-expand-secret-namespace: ceph-csi-rbd
+  csi.storage.k8s.io/node-stage-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/node-stage-secret-namespace: ceph-csi-rbd
+reclaimPolicy: Retain
+allowVolumeExpansion: true

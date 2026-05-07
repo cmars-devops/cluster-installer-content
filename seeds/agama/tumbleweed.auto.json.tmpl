@@ -1,0 +1,70 @@
+{
+  "_comment": "Agama unattended-install profile for openSUSE Tumbleweed. Same shape as leap.auto.json.tmpl with Tumbleweed-specific product id.",
+  "product": {
+    "id": "openSUSE_Tumbleweed"
+  },
+  "localization": {
+    "language": "en_US.UTF-8",
+    "keyboard": "us",
+    "timezone": "{{ .Cluster.Timezone | default "Asia/Seoul" }}"
+  },
+  "hostname": {
+    "static": "{{ .Node.Hostname }}"
+  },
+  "user": {
+    "fullName": "Admin",
+    "userName": "admin",
+    "password": {{ printf "%q" .Node.RootPasswordHash }},
+    "hashedPassword": true
+  },
+  "root": {
+    "password": {{ printf "%q" .Node.RootPasswordHash }},
+    "hashedPassword": true,
+    "sshPublicKey": {{ printf "%q" (index .Node.SSHAuthorizedKeys 0) }}
+  },
+  "network": {
+    "connections": [
+      {
+        "id": "public",
+        "match": { "driver": ["vmxnet3", "virtio_net"] },
+        "method4": "manual",
+        "method6": "disabled",
+        "addresses": ["{{ .Node.IP }}/{{ .Network.PrefixLen }}"],
+        "gateway4": "{{ .Network.Gateway }}",
+        "nameservers": [{{ range $i, $n := .Network.Nameservers }}{{ if $i }}, {{ end }}{{ printf "%q" $n }}{{ end }}],
+        "dns_searchlist": ["{{ .Cluster.Domain }}"],
+        "autoconnect": true
+      }
+    ]
+  },
+  "software": {
+    "patterns": []
+  },
+  "storage": {
+    "boot": { "configure": true, "device": "os-disk" },
+    "drives": [
+      {
+        "alias": "os-disk",
+        "search": "/dev/sda",
+        "ptableType": "gpt",
+        "partitions": [
+          { "size": { "min": "1 GiB" }, "filesystem": { "path": "/", "type": "ext4" } }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "post": [
+      {
+        "name": "node-init.sh",
+        "chroot": true,
+        "content": "#!/bin/bash\nset -euo pipefail\nsystemctl enable sshd\nsystemctl enable qemu-guest-agent 2>/dev/null || true\nmkdir -p /root/.ssh && chmod 700 /root/.ssh\ncat > /root/.ssh/authorized_keys <<'AUTHEOF'\n{{ range .Node.SSHAuthorizedKeys }}{{ . }}\n{{ end }}AUTHEOF\nchmod 600 /root/.ssh/authorized_keys\nhostnamectl set-hostname {{ .Node.Hostname }}\n\nmkdir -p /etc/NetworkManager/system-connections\ncat > /etc/NetworkManager/system-connections/public.nmconnection <<'NMEOF'\n[connection]\nid=public\ntype=ethernet\nautoconnect=true\nautoconnect-priority=100\n\n[ethernet]\nmac-address={{ .Node.PrimaryMAC }}\n\n[ipv4]\nmethod=manual\naddress1={{ .Node.IP }}/{{ .Network.PrefixLen }},{{ .Network.Gateway }}\ndns={{ range $i, $n := .Network.Nameservers }}{{ if $i }};{{ end }}{{ $n }}{{ end }};\n\n[ipv6]\nmethod=disabled\nNMEOF\nchmod 600 /etc/NetworkManager/system-connections/public.nmconnection\n"
+      },
+      {
+        "name": "poweroff.sh",
+        "chroot": false,
+        "content": "#!/bin/bash\nsleep 3\nsystemctl poweroff -f 2>/dev/null || poweroff -f\n"
+      }
+    ]
+  }
+}

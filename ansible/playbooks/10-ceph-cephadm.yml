@@ -1,0 +1,210 @@
+---
+# Bootstrap a Ceph cluster on dedicated storage nodes using cephadm.
+# Lessons baked in (from P:\K3s@IDC\scripts\install-ceph.sh):
+#   1. cephadm --image must come BEFORE the bootstrap subcommand.
+#   2. radosgw-admin realm create blocks forever if no OSDs are up+in
+#      → wait for OSDs before realm/zone creation.
+#   3. ceph-common is not always available; fall back to `cephadm shell --`.
+#   4. Open firewalld ports per role (cephadm doesn't do this).
+
+- name: Cephadm preflight (every Ceph host)
+  hosts: ceph_mons:ceph_mgrs:ceph_osds:ceph_rgws
+  become: true
+  tasks:
+    - name: Install podman (required by cephadm check-host)
+      ansible.builtin.package:
+        name: podman
+        state: present
+
+    - name: Open Ceph ports on MON/MGR
+      ansible.posix.firewalld:
+        port: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop:
+        - "3300/tcp"     # MON v2
+        - "6789/tcp"     # MON v1
+        - "8443/tcp"     # dashboard
+        - "9283/tcp"     # mgr/prometheus exporter
+        - "9100/tcp"     # node-exporter
+        - "6800-7300/tcp" # OSD/MDS/MGR daemons
+      when: "'ceph_mons' in group_names or 'ceph_mgrs' in group_names"
+      ignore_errors: true   # firewalld may be masked on MicroOS-style hosts
+
+    - name: Open OSD daemon ports
+      ansible.posix.firewalld:
+        port: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop:
+        - "6800-7300/tcp"
+        - "9100/tcp"
+      when: "'ceph_osds' in group_names"
+      ignore_errors: true
+
+    - name: Open RGW ports
+      ansible.posix.firewalld:
+        port: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop:
+        - "7480/tcp"
+        - "443/tcp"
+        - "9100/tcp"
+      when: "'ceph_rgws' in group_names"
+      ignore_errors: true
+
+- name: Cephadm bootstrap (first MON)
+  hosts: ceph_mons[0]
+  become: true
+  vars:
+    ceph_image: "quay.io/ceph/ceph:v{{ ceph_version | default('20.2.1') }}"
+    ceph_release: "{{ ceph_release | default('tentacle') }}"
+  tasks:
+    - name: Download cephadm CLI
+      ansible.builtin.get_url:
+        url: "https://download.ceph.com/rpm-{{ ceph_release }}/el9/noarch/cephadm"
+        dest: /usr/local/bin/cephadm
+        mode: "0755"
+
+    - name: Detect existing cluster
+      ansible.builtin.command: ceph -s
+      register: ceph_status
+      changed_when: false
+      failed_when: false
+
+    - name: cephadm bootstrap (NOTE --image position is critical)
+      ansible.builtin.command: >
+        /usr/local/bin/cephadm --image {{ ceph_image }} bootstrap
+          --mon-ip {{ ansible_host }}
+          {% if ceph_cluster_network %}--cluster-network {{ ceph_cluster_network }}{% endif %}
+          --initial-dashboard-user admin
+          --initial-dashboard-password {{ dashboard_password }}
+          --skip-monitoring-stack
+          --allow-fqdn-hostname
+          --log-to-file
+      when: ceph_status.rc != 0
+      register: bootstrap_result
+
+    - name: Install ceph-common (best effort)
+      ansible.builtin.command: cephadm install ceph-common
+      changed_when: false
+      failed_when: false
+
+- name: Distribute cephadm SSH key + register hosts
+  hosts: ceph_mons[0]
+  become: true
+  tasks:
+    - name: Get cephadm public key
+      ansible.builtin.command: ceph cephadm get-pub-key
+      register: cephadm_pubkey
+      changed_when: false
+
+    - name: Authorize cephadm key on every Ceph node
+      ansible.posix.authorized_key:
+        user: root
+        key: "{{ cephadm_pubkey.stdout }}"
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['ceph_mons'] + groups['ceph_mgrs'] + groups['ceph_osds'] + (groups['ceph_rgws'] | default([])) | unique }}"
+
+    - name: ceph orch host add (mons + mgrs + osds + rgws)
+      ansible.builtin.command: "ceph orch host add {{ item }} {{ hostvars[item].ansible_host }}"
+      loop: "{{ (groups['ceph_mons'] + groups['ceph_mgrs'] + groups['ceph_osds'] + (groups['ceph_rgws'] | default([]))) | unique }}"
+      register: orch_add
+      changed_when: orch_add.rc == 0
+      failed_when: orch_add.rc != 0 and 'already' not in (orch_add.stderr | default(''))
+
+    - name: Apply host labels (mon/mgr/mds/osd/rgw)
+      ansible.builtin.shell: |
+        for h in {{ groups['ceph_mons'] | join(' ') }}; do
+          ceph orch host label add $h mon; ceph orch host label add $h mgr; ceph orch host label add $h mds
+        done
+        for h in {{ groups['ceph_osds'] | join(' ') }}; do ceph orch host label add $h osd; done
+        {% if groups.get('ceph_rgws') %}
+        for h in {{ groups['ceph_rgws'] | join(' ') }}; do ceph orch host label add $h rgw; done
+        {% endif %}
+      changed_when: false
+
+    - name: Render and apply ceph spec
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../manifests/ceph/spec.yaml.tmpl"
+        dest: /root/ceph-spec.yaml
+
+    - name: ceph orch apply -i /root/ceph-spec.yaml
+      ansible.builtin.command: ceph orch apply -i /root/ceph-spec.yaml
+
+- name: Wait for OSDs to become up+in (max 15 min)
+  hosts: ceph_mons[0]
+  become: true
+  tasks:
+    - name: Poll OSD state
+      ansible.builtin.shell: ceph osd stat | awk '{for(i=1;i<=NF;i++) if($i=="up") print $(i-1)}'
+      register: osd_up
+      changed_when: false
+      retries: 90
+      delay: 10
+      until: (osd_up.stdout | int) >= (groups['ceph_osds'] | length)
+
+- name: RGW realm + pools + K8s keyrings (only after OSDs up+in)
+  hosts: ceph_mons[0]
+  become: true
+  tasks:
+    - name: Create RGW realm/zonegroup/zone
+      ansible.builtin.shell: |
+        radosgw-admin realm create --rgw-realm={{ rgw_realm | default('triangles') }} --default || \
+          radosgw-admin realm default --rgw-realm={{ rgw_realm | default('triangles') }} || true
+        radosgw-admin zonegroup create --rgw-zonegroup=default \
+          --rgw-realm={{ rgw_realm | default('triangles') }} --master --default || true
+        radosgw-admin zone create --rgw-zonegroup=default --rgw-zone=default \
+          --rgw-realm={{ rgw_realm | default('triangles') }} --master --default || true
+        radosgw-admin period update --commit || true
+      changed_when: false
+      when: groups.get('ceph_rgws') | length > 0
+
+    - name: Enable PG autoscaler
+      ansible.builtin.shell: |
+        ceph mgr module enable pg_autoscaler
+        ceph config set global osd_pool_default_pg_autoscale_mode on
+      changed_when: false
+
+    - name: Create RBD pool
+      ansible.builtin.shell: |
+        ceph osd pool create rbd-pool 32 || true
+        ceph osd pool application enable rbd-pool rbd || true
+        rbd pool init rbd-pool || true
+      changed_when: false
+
+    - name: Create CephFS volume
+      ansible.builtin.command: ceph fs volume create cephfs --placement=label:mds
+      register: cephfs_create
+      changed_when: cephfs_create.rc == 0
+      failed_when: cephfs_create.rc != 0 and 'exists' not in cephfs_create.stderr
+
+    - name: Create K8s RBD keyring
+      ansible.builtin.shell: |
+        ceph auth get-or-create client.k8s-rbd \
+          mon 'allow r' \
+          osd 'profile rbd pool=rbd-pool' \
+          > /etc/ceph/ceph.client.k8s-rbd.keyring
+        chmod 600 /etc/ceph/ceph.client.k8s-rbd.keyring
+      changed_when: false
+
+    - name: Create K8s CephFS keyring
+      ansible.builtin.shell: |
+        ceph auth get-or-create client.k8s-cephfs \
+          mon 'allow r' \
+          mds 'allow rw' \
+          osd 'allow rw tag cephfs *=cephfs' \
+          > /etc/ceph/ceph.client.k8s-cephfs.keyring
+        chmod 600 /etc/ceph/ceph.client.k8s-cephfs.keyring
+      changed_when: false
+
+    - name: Enable Ceph dashboard + Prometheus modules
+      ansible.builtin.shell: |
+        ceph mgr module enable dashboard
+        ceph dashboard create-self-signed-cert || true
+        ceph mgr module enable prometheus
+      changed_when: false

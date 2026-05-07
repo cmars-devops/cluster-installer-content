@@ -1,0 +1,55 @@
+---
+# Preflight: time sync, hostname, firewall, sysctl, kernel modules.
+# Idempotent — must succeed on already-prepared hosts without changes.
+- name: Preflight all nodes
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Ensure chrony is installed and running
+      ansible.builtin.package:
+        name: chrony
+        state: present
+      when: ansible_os_family == 'Suse'
+
+    - name: Ensure chronyd is enabled
+      ansible.builtin.service:
+        name: chronyd
+        state: started
+        enabled: true
+
+    - name: Set hostname
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Sysctl for kubernetes
+      ansible.posix.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        sysctl_file: /etc/sysctl.d/90-cluster.conf
+        reload: true
+      loop:
+        - { name: 'net.ipv4.ip_forward',          value: '1' }
+        - { name: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+        - { name: 'fs.inotify.max_user_instances', value: '8192' }
+        - { name: 'fs.inotify.max_user_watches',   value: '524288' }
+
+    - name: Load required kernel modules
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: present
+        persistent: present
+      loop: [br_netfilter, overlay, rbd]
+
+    - name: Open required cluster ports (firewalld)
+      ansible.posix.firewalld:
+        zone: trusted
+        source: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop:
+        - "{{ pod_cidr }}"
+        - "{{ service_cidr }}"
+      when: ansible_facts.services['firewalld.service'] is defined

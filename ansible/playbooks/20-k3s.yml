@@ -1,0 +1,150 @@
+---
+# Install K3s with kube-vip control-plane VIP.
+# Lessons baked in (from P:\K3s@IDC\scripts\install-k3s.sh):
+#   1. server-01 bootstraps with --cluster-init, --tls-san=$VIP.
+#   2. kube-vip DaemonSet must be applied BEFORE server-02/03 join — the
+#      Helm chart is unsuitable here (chicken-and-egg with API VIP).
+#   3. server-02/03 join via K3S_URL=https://$VIP:6443 (not the master IP).
+#   4. INSTALL_K3S_SELINUX_WARN=false on Leap Micro; k3s-selinux already
+#      installed by Combustion's first-boot oneshot.
+#   5. --disable=traefik --disable=servicelb (we install MetalLB + ingress
+#      from Helm in 40-addons.yml).
+
+- name: Pre-flight K3s nodes
+  hosts: k3s_servers:k3s_agents
+  become: true
+  tasks:
+    - name: Verify k3s-selinux on Leap Micro nodes
+      ansible.builtin.command: rpm -q k3s-selinux
+      register: k3sselinux
+      changed_when: false
+      failed_when: k3sselinux.rc != 0
+      when: ansible_distribution_version is search('Micro')
+
+- name: Bootstrap K3s server-01 + kube-vip
+  hosts: k3s_servers[0]
+  become: true
+  vars:
+    k3s_install_url: "https://get.k3s.io"
+    kube_vip_version: "v0.9.1"
+  tasks:
+    - name: Install k3s server-01 (cluster-init)
+      ansible.builtin.shell: |
+        curl -sfL {{ k3s_install_url }} | \
+          INSTALL_K3S_VERSION="{{ k3s_version }}" \
+          K3S_TOKEN="{{ k3s_token }}" \
+          INSTALL_K3S_SELINUX_WARN=false \
+          INSTALL_K3S_EXEC="server \
+            --cluster-init \
+            --disable=traefik \
+            --disable=servicelb \
+            --tls-san={{ kube_vip }} \
+            --tls-san={{ ansible_host }} \
+            --tls-san={{ inventory_hostname }} \
+            --node-ip={{ ansible_host }} \
+            --advertise-address={{ ansible_host }} \
+            --write-kubeconfig-mode=644 \
+            --kubelet-arg=eviction-hard=memory.available<500Mi \
+            --kubelet-arg=eviction-soft=memory.available<1Gi \
+            --kubelet-arg=eviction-soft-grace-period=memory.available=30s" \
+          sh -
+      args:
+        creates: /usr/local/bin/k3s
+
+    - name: Wait for kubeconfig
+      ansible.builtin.wait_for:
+        path: /etc/rancher/k3s/k3s.yaml
+        timeout: 180
+
+    - name: Wait for control-plane Ready
+      ansible.builtin.shell: |
+        kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes | grep -q Ready
+      changed_when: false
+      retries: 24
+      delay: 5
+
+    - name: Apply kube-vip RBAC
+      ansible.builtin.shell: |
+        kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f https://kube-vip.io/manifests/rbac.yaml
+
+    - name: Render kube-vip DaemonSet via podman one-shot
+      ansible.builtin.shell: |
+        podman run --network host --rm \
+          ghcr.io/kube-vip/kube-vip:{{ kube_vip_version }} \
+          manifest daemonset \
+            --interface {{ kube_vip_interface | default('ens192') }} \
+            --address {{ kube_vip }} \
+            --inCluster --taint --controlplane --arp --leaderElection \
+        | kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f -
+      changed_when: true
+
+    - name: Wait for VIP to bind locally
+      ansible.builtin.shell: ip addr show {{ kube_vip_interface | default('ens192') }} | grep -q "{{ kube_vip }}"
+      changed_when: false
+      retries: 18
+      delay: 5
+
+    - name: Fetch K3s join token
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: k3s_join_token
+
+    - name: Stash token as host fact for the next play
+      ansible.builtin.set_fact:
+        k3s_node_token: "{{ k3s_join_token.content | b64decode | trim }}"
+
+    - name: Fetch kubeconfig back to controller
+      ansible.builtin.fetch:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "{{ playbook_dir }}/../../runs/kubeconfig"
+        flat: true
+
+    - name: Rewrite kubeconfig server URL to VIP
+      ansible.builtin.replace:
+        path: "{{ playbook_dir }}/../../runs/kubeconfig"
+        regexp: "127.0.0.1"
+        replace: "{{ kube_vip }}"
+      delegate_to: localhost
+      become: false
+
+- name: Join remaining K3s servers via VIP
+  hosts: k3s_servers[1:]
+  become: true
+  vars:
+    k3s_install_url: "https://get.k3s.io"
+    join_token: "{{ hostvars[groups['k3s_servers'][0]]['k3s_node_token'] }}"
+  tasks:
+    - name: Install k3s server (join)
+      ansible.builtin.shell: |
+        curl -sfL {{ k3s_install_url }} | \
+          INSTALL_K3S_VERSION="{{ k3s_version }}" \
+          K3S_TOKEN="{{ join_token }}" \
+          K3S_URL="https://{{ kube_vip }}:6443" \
+          INSTALL_K3S_SELINUX_WARN=false \
+          INSTALL_K3S_EXEC="server \
+            --disable=traefik \
+            --disable=servicelb \
+            --tls-san={{ kube_vip }} \
+            --write-kubeconfig-mode=644" \
+          sh -
+      args:
+        creates: /usr/local/bin/k3s
+
+- name: Join K3s agents via VIP
+  hosts: k3s_agents
+  become: true
+  vars:
+    k3s_install_url: "https://get.k3s.io"
+    join_token: "{{ hostvars[groups['k3s_servers'][0]]['k3s_node_token'] }}"
+  tasks:
+    - name: Install k3s agent
+      ansible.builtin.shell: |
+        curl -sfL {{ k3s_install_url }} | \
+          INSTALL_K3S_VERSION="{{ k3s_version }}" \
+          K3S_TOKEN="{{ join_token }}" \
+          K3S_URL="https://{{ kube_vip }}:6443" \
+          INSTALL_K3S_SELINUX_WARN=false \
+          INSTALL_K3S_EXEC="agent --node-ip={{ ansible_host }}" \
+          sh -
+      args:
+        creates: /usr/local/bin/k3s

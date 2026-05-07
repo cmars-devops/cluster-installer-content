@@ -1,0 +1,28 @@
+grafana:
+  defaultDashboardsTimezone: Asia/Seoul
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: false             # operator opens this through ingress-nginx separately
+
+prometheus:
+  prometheusSpec:
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: ceph-rbd
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 50Gi
+
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: ceph-rbd
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 5Gi

@@ -1,0 +1,29 @@
+---
+# External roles/collections, pinned by git ref. Keep these in lockstep with
+# the installer's content-repo tag.
+collections:
+  - name: ansible.posix
+    version: 1.5.4
+  - name: community.general
+    version: 9.1.0
+  - name: kubernetes.core
+    version: 5.0.0
+
+roles:
+  # Official cephadm bootstrap roles
+  - name: cephadm-ansible
+    src: https://github.com/ceph/cephadm-ansible.git
+    scm: git
+    version: v3.1.0
+
+  # Rancher RKE2 — primary k8s distro
+  - name: rke2-ansible
+    src: https://github.com/rancher/rke2-ansible.git
+    scm: git
+    version: v1.31.4
+
+  # K3s — small/edge option
+  - name: k3s-ansible
+    src: https://github.com/k3s-io/k3s-ansible.git
+    scm: git
+    version: v2.1.0

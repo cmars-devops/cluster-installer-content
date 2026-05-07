@@ -1,0 +1,34 @@
+---
+# MetalLB IP address pools, applied after MetalLB Helm install in 40-addons.yml.
+# Pattern from P:\K3s@IDC\manifests\metallb\ipaddresspools.yaml — two pools:
+#   - public-nat: fixed /32 for the ingress controller (autoAssign=false)
+#   - internal:   floating range for general LoadBalancer services
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: public-nat
+  namespace: metallb-system
+spec:
+  addresses:
+    - {{ "{{" }} ingress_lb_ip {{ "}}" }}/32
+  autoAssign: false
+---
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: internal
+  namespace: metallb-system
+spec:
+  addresses:
+    - {{ "{{" }} lb_pool {{ "}}" }}
+  autoAssign: true
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: l2-adv
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - public-nat
+    - internal

@@ -1,0 +1,85 @@
+---
+# cephadm service spec — rendered per cluster from inventory.
+# Reference: P:\K3s@IDC\config\ceph-spec.yaml (production-validated).
+# Apply: ssh root@<bootstrap> "ceph orch apply -i /root/ceph-spec.yaml"
+#
+# Order matters in Ceph day-1:
+#   1. host registration (this file's first N docs)
+#   2. mon/mgr/mds placement by label
+#   3. OSD spec (waits for hosts to advertise the device paths)
+#   4. RGW (only after OSDs are up+in — see install playbook)
+
+{{- range .Nodes }}
+service_type: host
+hostname: {{ .Hostname }}
+addr: {{ .IP }}
+labels:
+{{- range .CephLabels }}
+  - {{ . }}
+{{- end }}
+---
+{{- end }}
+
+# ── MON: 3대 quorum ─────────────────────────────────────────
+service_type: mon
+placement:
+  label: mon
+  count: {{ .Counts.Mon }}
+---
+# ── MGR: active + standby ──────────────────────────────────
+service_type: mgr
+placement:
+  label: mgr
+  count: {{ .Counts.Mgr }}
+{{- if .Counts.Mds }}
+---
+# ── MDS: CephFS ────────────────────────────────────────────
+service_type: mds
+service_id: cephfs
+placement:
+  label: mds
+  count: {{ .Counts.Mds }}
+{{- end }}
+---
+# ── OSD: BlueStore with separate WAL/DB ─────────────────────
+service_type: osd
+service_id: all-osds
+placement:
+  label: osd
+spec:
+  data_devices:
+    paths:
+{{- range .OSD.DataDevices }}
+      - {{ . }}
+{{- end }}
+  db_devices:
+    paths:
+{{- range .OSD.DBDevices }}
+      - {{ . }}
+{{- end }}
+  osds_per_device: 1
+  encrypted: false
+{{- if .Counts.Rgw }}
+---
+# ── RGW: S3 endpoint (HA) ──────────────────────────────────
+service_type: rgw
+service_id: {{ .RGW.Realm }}.{{ .RGW.Zone }}
+placement:
+  label: rgw
+  count: {{ .Counts.Rgw }}
+spec:
+  rgw_realm: {{ .RGW.Realm }}
+  rgw_zonegroup: {{ .RGW.Zonegroup }}
+  rgw_zone: {{ .RGW.Zone }}
+  rgw_frontend_type: beast
+  rgw_frontend_port: 7480
+{{- end }}
+---
+# ── crash + node-exporter on every host ────────────────────
+service_type: crash
+placement:
+  host_pattern: "*"
+---
+service_type: node-exporter
+placement:
+  host_pattern: "*"

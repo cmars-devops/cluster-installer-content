@@ -1,0 +1,114 @@
+#!/bin/bash
+# combustion: network
+#
+# openSUSE MicroOS / SLE Micro / Leap Micro 6.2 first-boot configurator.
+# Combustion runs after Ignition. The 'network' flag above tells Combustion
+# to bring up networking before this script runs.
+#
+# This is a Go text/template file rendered by the Windows installer per node,
+# then packed into the seed ISO at /combustion/script with label 'ignition'.
+#
+# Patterns adopted from working production deployment (P:\K3s@IDC\scripts\generate-combustion.py):
+#   - firewalld: disable only, NEVER mask (mask breaks K3s CoreDNS/nftables)
+#   - swap: disable zram-generator (K3s requirement)
+#   - k3s-selinux: install on first boot via systemd oneshot + reboot
+#     (transactional-update can't run reliably inside Combustion's chroot)
+
+set -euxo pipefail
+
+# --- root password (hashed) -------------------------------------------------
+echo 'root:{{ .Node.RootPasswordHash }}' | chpasswd -e
+
+# --- hostname ---------------------------------------------------------------
+echo "{{ .Node.Hostname }}" > /etc/hostname
+
+# --- /etc/hosts (cluster-wide) ---------------------------------------------
+cat > /etc/hosts <<'HOSTSEOF'
+127.0.0.1   localhost
+::1         localhost
+{{ range .Cluster.HostsEntries }}{{ . }}
+{{ end }}HOSTSEOF
+
+# --- network (NetworkManager, mac-address bound) ----------------------------
+# Drop SelfInstall's auto-generated default connection, write our explicit one.
+rm -f /etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null || true
+mkdir -p /etc/NetworkManager/system-connections
+cat > /etc/NetworkManager/system-connections/public.nmconnection <<'NMEOF'
+[connection]
+id=public
+type=ethernet
+autoconnect=true
+autoconnect-priority=100
+
+{{ if .Node.PrimaryMAC }}[ethernet]
+mac-address={{ .Node.PrimaryMAC }}
+
+{{ end }}[ipv4]
+method=manual
+address1={{ .Node.IP }}/{{ .Network.PrefixLen }},{{ .Network.Gateway }}
+dns={{ range $i, $n := .Network.Nameservers }}{{ if $i }};{{ end }}{{ $n }}{{ end }};
+
+[ipv6]
+method=disabled
+NMEOF
+chmod 600 /etc/NetworkManager/system-connections/public.nmconnection
+
+# --- ssh ----------------------------------------------------------------
+systemctl enable sshd 2>/dev/null || true
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+cat > /root/.ssh/authorized_keys <<'AUTHEOF'
+{{ range .Node.SSHAuthorizedKeys }}{{ . }}
+{{ end }}AUTHEOF
+chmod 600 /root/.ssh/authorized_keys
+
+mkdir -p /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/99-allow-root.conf <<'SSHEOF'
+PermitRootLogin yes
+PasswordAuthentication yes
+SSHEOF
+
+# --- sysctl (k8s networking) -----------------------------------------------
+cat > /etc/sysctl.d/90-k8s.conf <<'SYSEOF'
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+vm.overcommit_memory = 1
+vm.swappiness = 0
+kernel.panic = 10
+kernel.panic_on_oops = 1
+SYSEOF
+
+# --- firewalld: disable, do NOT mask (Leap Micro + K3s) -------------------
+# Masking breaks K3s CoreDNS / nftables interaction (P:\K3s@IDC issue #note).
+systemctl disable firewalld 2>/dev/null || true
+
+# --- swap: disable zram (K3s requires no swap) -----------------------------
+swapoff -a 2>/dev/null || true
+sed -i '/swap/d' /etc/fstab 2>/dev/null || true
+systemctl disable --now zram-generator-swap.service 2>/dev/null || true
+printf '[zram0]\nswap-size = 0\n' > /etc/systemd/zram-generator.conf 2>/dev/null || true
+
+{{ if .Node.NeedsK3sSELinux }}
+# --- k3s-selinux: first-boot oneshot via transactional-update --------------
+# Can't run transactional-update from inside Combustion (read-only root,
+# no real container plumbing). Defer to first boot.
+cat > /etc/systemd/system/k3s-selinux-install.service <<'SVEOF'
+[Unit]
+Description=Install k3s-selinux on first boot (Leap Micro)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/k3s-selinux-installed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/transactional-update --non-interactive pkg install k3s-selinux
+ExecStartPost=/bin/touch /var/lib/k3s-selinux-installed
+ExecStartPost=/bin/systemctl reboot
+
+[Install]
+WantedBy=multi-user.target
+SVEOF
+systemctl enable k3s-selinux-install.service
+{{ end }}
+
+echo "Combustion done: {{ .Node.Hostname }} ({{ .Node.IP }})"

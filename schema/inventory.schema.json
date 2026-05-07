@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://triangles.co.kr/cluster-installer/inventory.schema.json",
+  "title": "Cluster Installer Inventory",
+  "type": "object",
+  "required": ["cluster", "network", "target", "nodes", "ceph", "addons", "content"],
+  "additionalProperties": false,
+  "properties": {
+    "cluster": {
+      "type": "object",
+      "required": ["name", "domain", "kubernetes"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,30}[a-z0-9]$" },
+        "domain": { "type": "string", "format": "hostname" },
+        "timezone": { "type": "string", "default": "Asia/Seoul" },
+        "kubernetes": {
+          "type": "object",
+          "required": ["distro", "version", "cni"],
+          "additionalProperties": false,
+          "properties": {
+            "distro": { "enum": ["rke2", "k3s"] },
+            "version": { "type": "string" },
+            "cni": { "enum": ["cilium", "canal", "calico"] }
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "required": ["pod_cidr", "service_cidr", "vip", "lb_pool"],
+      "additionalProperties": false,
+      "properties": {
+        "pod_cidr": { "type": "string" },
+        "service_cidr": { "type": "string" },
+        "vip": { "type": "string", "format": "ipv4" },
+        "lb_pool": { "type": "string", "pattern": "^[0-9.]+-[0-9.]+$" },
+        "ingress_lb_ip": { "type": "string", "format": "ipv4" },
+        "gateway": { "type": "string", "format": "ipv4" },
+        "nameservers": { "type": "array", "items": { "type": "string", "format": "ipv4" } },
+        "prefix_len": { "type": "integer", "minimum": 8, "maximum": 30, "default": 24 },
+        "cluster_prefix_len": { "type": "integer", "minimum": 8, "maximum": 30, "default": 24 }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["type", "endpoint"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "enum": ["libvirt", "proxmox"] },
+        "endpoint": { "type": "string" },
+        "ssh_key": { "type": "string" },
+        "username": { "type": "string" },
+        "api_token": { "type": "string" },
+        "tls_insecure": { "type": "boolean", "default": false }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["hostname", "ip", "roles", "os"],
+        "additionalProperties": false,
+        "properties": {
+          "hostname": { "type": "string" },
+          "ip": { "type": "string", "format": "ipv4" },
+          "cluster_ip": { "type": "string", "format": "ipv4", "description": "Optional Ceph cluster network IP (C-Net) for OSD nodes" },
+          "primary_mac": { "type": "string", "pattern": "^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$", "description": "Discovered after VM creation; bound in NM connection to survive multi-NIC additions" },
+          "network_interface": { "type": "string", "description": "Primary NIC name (default: ens192 for ESXi vmxnet3, eth0 for libvirt virtio)" },
+          "roles": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "enum": ["control-plane", "etcd", "worker", "ceph-mon", "ceph-mgr", "ceph-osd", "ceph-mds", "ceph-rgw"] }
+          },
+          "os": { "enum": ["microos", "leap", "tumbleweed"] },
+          "cpu": { "type": "integer", "minimum": 1, "default": 2 },
+          "memory_gb": { "type": "integer", "minimum": 1, "default": 4 },
+          "disk_gb": { "type": "integer", "minimum": 10, "default": 40 },
+          "storage_devices": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^/dev/" }
+          },
+          "ssh_authorized_keys": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "ceph": {
+      "type": "object",
+      "required": ["mode", "public_network", "pools"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["external", "rook"] },
+        "public_network": { "type": "string" },
+        "cluster_network": { "type": "string" },
+        "pools": {
+          "type": "array",
+          "items": { "enum": ["rbd", "cephfs", "rgw"] }
+        }
+      }
+    },
+    "addons": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ingress": { "enum": ["ingress-nginx", "traefik", "none"], "default": "ingress-nginx" },
+        "cert_manager": { "type": "boolean", "default": true },
+        "monitoring": { "enum": ["kube-prometheus-stack", "none"], "default": "kube-prometheus-stack" },
+        "gitops": { "enum": ["argocd", "flux", "none"], "default": "none" }
+      }
+    },
+    "content": {
+      "type": "object",
+      "required": ["ref"],
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "type": "string", "description": "git tag or commit of the content repo" },
+        "repo": { "type": "string", "format": "uri", "default": "https://github.com/cmars-devops/cluster-installer-content.git" }
+      }
+    }
+  }
+}

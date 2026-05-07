@@ -1,0 +1,136 @@
+---
+# Install RKE2 with kube-vip control-plane VIP.
+# Same kube-vip pattern as 20-k3s.yml — DaemonSet via podman one-shot,
+# applied before HA-server join. Defaults to RKE2 ingress-nginx disabled
+# in favor of our pinned chart in 40-addons.yml.
+
+- name: Pre-flight RKE2 nodes
+  hosts: rke2_servers:rke2_agents
+  become: true
+  tasks:
+    - name: Verify network reachability of API VIP target
+      ansible.builtin.command: ping -c 1 -W 2 {{ ansible_default_ipv4.gateway }}
+      changed_when: false
+
+- name: Bootstrap RKE2 server-01 + kube-vip
+  hosts: rke2_servers[0]
+  become: true
+  vars:
+    kube_vip_version: "v0.9.1"
+    rke2_install_url: "https://get.rke2.io"
+  tasks:
+    - name: Render RKE2 server config
+      ansible.builtin.copy:
+        dest: /etc/rancher/rke2/config.yaml
+        mode: "0600"
+        content: |
+          token: {{ rke2_token }}
+          tls-san:
+            - {{ kube_vip }}
+            - {{ ansible_host }}
+            - {{ inventory_hostname }}
+          node-ip: {{ ansible_host }}
+          advertise-address: {{ ansible_host }}
+          disable:
+            - rke2-ingress-nginx
+            - rke2-snapshot-controller
+          cni: {{ cni }}
+          write-kubeconfig-mode: "0644"
+
+    - name: Install RKE2 server (cluster bootstrap)
+      ansible.builtin.shell: |
+        curl -sfL {{ rke2_install_url }} | \
+          INSTALL_RKE2_VERSION="{{ rke2_version }}" \
+          INSTALL_RKE2_TYPE="server" \
+          sh -
+        systemctl enable --now rke2-server.service
+      args:
+        creates: /usr/local/bin/rke2
+
+    - name: Wait for kubeconfig
+      ansible.builtin.wait_for:
+        path: /etc/rancher/rke2/rke2.yaml
+        timeout: 240
+
+    - name: Apply kube-vip RBAC
+      ansible.builtin.shell: |
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig=/etc/rancher/rke2/rke2.yaml \
+          apply -f https://kube-vip.io/manifests/rbac.yaml
+
+    - name: Render kube-vip DaemonSet via podman
+      ansible.builtin.shell: |
+        podman run --network host --rm \
+          ghcr.io/kube-vip/kube-vip:{{ kube_vip_version }} \
+          manifest daemonset \
+            --interface {{ kube_vip_interface | default('ens192') }} \
+            --address {{ kube_vip }} \
+            --inCluster --taint --controlplane --arp --leaderElection \
+        | /var/lib/rancher/rke2/bin/kubectl --kubeconfig=/etc/rancher/rke2/rke2.yaml apply -f -
+      changed_when: true
+
+    - name: Wait for VIP bind
+      ansible.builtin.shell: ip addr show {{ kube_vip_interface | default('ens192') }} | grep -q "{{ kube_vip }}"
+      changed_when: false
+      retries: 18
+      delay: 5
+
+    - name: Fetch kubeconfig
+      ansible.builtin.fetch:
+        src: /etc/rancher/rke2/rke2.yaml
+        dest: "{{ playbook_dir }}/../../runs/kubeconfig"
+        flat: true
+
+    - name: Rewrite kubeconfig server URL to VIP
+      ansible.builtin.replace:
+        path: "{{ playbook_dir }}/../../runs/kubeconfig"
+        regexp: "127.0.0.1"
+        replace: "{{ kube_vip }}"
+      delegate_to: localhost
+      become: false
+
+- name: Join additional RKE2 servers via VIP
+  hosts: rke2_servers[1:]
+  become: true
+  tasks:
+    - name: Render RKE2 join config
+      ansible.builtin.copy:
+        dest: /etc/rancher/rke2/config.yaml
+        mode: "0600"
+        content: |
+          server: https://{{ kube_vip }}:9345
+          token: {{ rke2_token }}
+          tls-san:
+            - {{ kube_vip }}
+          node-ip: {{ ansible_host }}
+          disable:
+            - rke2-ingress-nginx
+          cni: {{ cni }}
+
+    - name: Install RKE2 server (join)
+      ansible.builtin.shell: |
+        curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION="{{ rke2_version }}" \
+          INSTALL_RKE2_TYPE="server" sh -
+        systemctl enable --now rke2-server.service
+      args:
+        creates: /usr/local/bin/rke2
+
+- name: Join RKE2 agents via VIP
+  hosts: rke2_agents
+  become: true
+  tasks:
+    - name: Render RKE2 agent config
+      ansible.builtin.copy:
+        dest: /etc/rancher/rke2/config.yaml
+        mode: "0600"
+        content: |
+          server: https://{{ kube_vip }}:9345
+          token: {{ rke2_token }}
+          node-ip: {{ ansible_host }}
+
+    - name: Install RKE2 agent
+      ansible.builtin.shell: |
+        curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION="{{ rke2_version }}" \
+          INSTALL_RKE2_TYPE="agent" sh -
+        systemctl enable --now rke2-agent.service
+      args:
+        creates: /usr/local/bin/rke2

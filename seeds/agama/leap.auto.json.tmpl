@@ -1,0 +1,86 @@
+{
+  "_comment": "Agama unattended-install profile for openSUSE Leap 16. Schema verified against P:\\K3s@IDC\\profiles (production deployment). NOTE: this profile is delivered to Agama via inst.auto=http://<host>:<port>/profiles/<host>.json — NOT via OEMDRV/device:// (Agama does not support that path; only AutoYaST did). The Windows installer must run an embedded HTTP server to serve this file.",
+  "product": {
+    "id": "openSUSE_Leap"
+  },
+  "localization": {
+    "language": "en_US.UTF-8",
+    "keyboard": "us",
+    "timezone": "{{ .Cluster.Timezone | default "Asia/Seoul" }}"
+  },
+  "hostname": {
+    "static": "{{ .Node.Hostname }}"
+  },
+  "user": {
+    "fullName": "Admin",
+    "userName": "admin",
+    "password": {{ printf "%q" .Node.RootPasswordHash }},
+    "hashedPassword": true
+  },
+  "root": {
+    "password": {{ printf "%q" .Node.RootPasswordHash }},
+    "hashedPassword": true,
+    "sshPublicKey": {{ printf "%q" (index .Node.SSHAuthorizedKeys 0) }}
+  },
+  "network": {
+    "connections": [
+      {{- /* Use interface-based matching, not match.mac (Agama rejects match.mac). */ -}}
+      {{- /* For multi-NIC nodes (e.g. Ceph OSD with cluster network), template adds a second connection on ens224. */ -}}
+      {
+        "id": "public",
+        {{- if .Node.HasClusterNIC }}
+        "match": { "interface": ["ens192"] },
+        {{- else }}
+        "match": { "driver": ["vmxnet3"] },
+        {{- end }}
+        "method4": "manual",
+        "method6": "disabled",
+        "addresses": ["{{ .Node.IP }}/{{ .Network.PrefixLen }}"],
+        "gateway4": "{{ .Network.Gateway }}",
+        "nameservers": [{{ range $i, $n := .Network.Nameservers }}{{ if $i }}, {{ end }}{{ printf "%q" $n }}{{ end }}],
+        "dns_searchlist": ["{{ .Cluster.Domain }}"],
+        "autoconnect": true
+      }{{ if .Node.HasClusterNIC }},
+      {
+        "id": "cluster",
+        "match": { "interface": ["ens224"] },
+        "method4": "manual",
+        "method6": "disabled",
+        "addresses": ["{{ .Node.ClusterIP }}/{{ .Network.ClusterPrefixLen }}"],
+        "autoconnect": true
+      }{{ end }}
+    ]
+  },
+  "software": {
+    "patterns": []
+  },
+  "storage": {
+    "boot": { "configure": true, "device": "os-disk" },
+    "drives": [
+      {
+        "alias": "os-disk",
+        "search": "/dev/sda",
+        "ptableType": "gpt",
+        "partitions": [
+          { "size": { "min": "1 GiB" }, "filesystem": { "path": "/", "type": "ext4" } }
+        ]
+      }{{ if .Node.NeedsCephOSD }},
+      { "alias": "data-disk", "search": "/dev/sdb" },
+      { "alias": "wal-disk",  "search": "/dev/sdc" }{{ end }}
+    ]
+  },
+  "scripts": {
+    "post": [
+      {
+        "name": "node-init.sh",
+        "chroot": true,
+        "content": "#!/bin/bash\nset -euo pipefail\n\nsystemctl enable sshd\nsystemctl enable qemu-guest-agent 2>/dev/null || true\n# Ceph: firewalld can be masked (Ceph won't fight nftables).\nsystemctl disable firewalld 2>/dev/null || true\nsystemctl mask firewalld 2>/dev/null || true\n\nmkdir -p /etc/ssh/sshd_config.d\ncat > /etc/ssh/sshd_config.d/99-allow-root.conf <<'SSHCFG'\nPermitRootLogin yes\nPasswordAuthentication yes\nSSHCFG\n\nmkdir -p /root/.ssh && chmod 700 /root/.ssh\ncat > /root/.ssh/authorized_keys <<'AUTHEOF'\n{{ range .Node.SSHAuthorizedKeys }}{{ . }}\n{{ end }}AUTHEOF\nchmod 600 /root/.ssh/authorized_keys\n\nhostnamectl set-hostname {{ .Node.Hostname }}\n\ncat > /etc/sysctl.d/90-net.conf <<'SYSEOF'\nnet.ipv4.ip_forward = 1\nnet.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-call-ip6tables = 1\nSYSEOF\n\n{{ if .Node.NeedsCephOSD }}# OSD: wipe data + WAL/DB devices so cephadm can take them over cleanly.\nwipefs -a /dev/sdb 2>/dev/null || true\nwipefs -a /dev/sdc 2>/dev/null || true\nsgdisk --zap-all /dev/sdb 2>/dev/null || true\nsgdisk --zap-all /dev/sdc 2>/dev/null || true\n{{ end }}\n# CRITICAL: write the public NM connection with mac-address= so a later\n# second-NIC add (Ceph cluster network) cannot rebind 'public' to the wrong\n# interface. Background: P:\\K3s@IDC docs/01.OpenSUSE16+Ceph-Setup/04-troubleshooting-lessons.md issue #5\nmkdir -p /etc/NetworkManager/system-connections\nrm -f /etc/NetworkManager/system-connections/Wired*.nmconnection 2>/dev/null || true\nrm -f /etc/NetworkManager/system-connections/public.nmconnection 2>/dev/null || true\ncat > /etc/NetworkManager/system-connections/public.nmconnection <<'NMEOF'\n[connection]\nid=public\ntype=ethernet\nautoconnect=true\nautoconnect-priority=100\n\n[ethernet]\nmac-address={{ .Node.PrimaryMAC }}\n\n[ipv4]\nmethod=manual\naddress1={{ .Node.IP }}/{{ .Network.PrefixLen }},{{ .Network.Gateway }}\ndns={{ range $i, $n := .Network.Nameservers }}{{ if $i }};{{ end }}{{ $n }}{{ end }};\ndns-search={{ .Cluster.Domain }}\n\n[ipv6]\nmethod=disabled\nNMEOF\nchmod 600 /etc/NetworkManager/system-connections/public.nmconnection\n\necho 'init done: {{ .Node.Hostname }} ({{ .Node.IP }})'\n"
+      },
+      {
+        "name": "poweroff.sh",
+        "chroot": false,
+        "content": "#!/bin/bash\nsleep 3\nsystemctl poweroff -f 2>/dev/null || poweroff -f\n"
+      }
+    ]
+  }
+}

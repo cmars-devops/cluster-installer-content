@@ -1,0 +1,130 @@
+---
+# Wire ceph-csi to the freshly-installed k8s cluster.
+# Pulls Ceph cluster info + client.k8s-rbd keyring from the first MON,
+# templates ceph-csi values + StorageClass, then helm-installs.
+
+- name: Collect Ceph cluster info from first MON
+  hosts: ceph_mons[0]
+  become: true
+  tasks:
+    - name: Get fsid
+      ansible.builtin.command: ceph fsid
+      register: ceph_fsid
+      changed_when: false
+
+    - name: Get MON public addresses
+      ansible.builtin.shell: |
+        ceph mon dump 2>/dev/null \
+          | grep "v1:" \
+          | awk '{print $2}' \
+          | sed 's/v1://' \
+          | awk -F/ '{print $1}'
+      register: ceph_mons_out
+      changed_when: false
+
+    - name: Read client.k8s-rbd key
+      ansible.builtin.command: ceph auth get-key client.k8s-rbd
+      register: ceph_k8s_rbd
+      changed_when: false
+
+    - name: Read client.k8s-cephfs key
+      ansible.builtin.command: ceph auth get-key client.k8s-cephfs
+      register: ceph_k8s_cephfs
+      changed_when: false
+
+    - name: Stash facts on localhost for next play
+      ansible.builtin.set_fact:
+        ceph_cluster_fsid: "{{ ceph_fsid.stdout }}"
+        ceph_mon_endpoints: "{{ ceph_mons_out.stdout_lines }}"
+        ceph_k8s_rbd_key: "{{ ceph_k8s_rbd.stdout }}"
+        ceph_k8s_cephfs_key: "{{ ceph_k8s_cephfs.stdout }}"
+      delegate_facts: true
+      delegate_to: localhost
+
+- name: Install ceph-csi via Helm
+  hosts: localhost
+  connection: local
+  vars:
+    kubeconfig: "{{ playbook_dir }}/../../runs/kubeconfig"
+  tasks:
+    - name: Render ceph-csi values
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../manifests/helm/ceph-csi/values.yaml.tmpl"
+        dest: "{{ playbook_dir }}/../../runs/ceph-csi-values.yaml"
+
+    - name: Add ceph-csi Helm repo
+      kubernetes.core.helm_repository:
+        name: ceph-csi
+        repo_url: https://ceph.github.io/csi-charts
+
+    - name: Install ceph-csi-rbd
+      kubernetes.core.helm:
+        name: ceph-csi-rbd
+        chart_ref: ceph-csi/ceph-csi-rbd
+        release_namespace: ceph-csi-rbd
+        create_namespace: true
+        kubeconfig: "{{ kubeconfig }}"
+        values_files:
+          - "{{ playbook_dir }}/../../runs/ceph-csi-values.yaml"
+        wait: true
+        timeout: 5m
+
+    - name: Install ceph-csi-cephfs
+      kubernetes.core.helm:
+        name: ceph-csi-cephfs
+        chart_ref: ceph-csi/ceph-csi-cephfs
+        release_namespace: ceph-csi-rbd
+        kubeconfig: "{{ kubeconfig }}"
+        values_files:
+          - "{{ playbook_dir }}/../../runs/ceph-csi-values.yaml"
+        wait: true
+        timeout: 5m
+
+    - name: Render StorageClass + Secret
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../manifests/ceph-csi/storageclass.yaml.tmpl"
+        dest: "{{ playbook_dir }}/../../runs/ceph-storageclass.yaml"
+
+    - name: Apply StorageClass + Secret
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        src: "{{ playbook_dir }}/../../runs/ceph-storageclass.yaml"
+        state: present
+
+    - name: Smoke test — create + bind 1Gi PVC
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: ceph-rbd-smoke-test
+            namespace: default
+          spec:
+            storageClassName: ceph-rbd
+            accessModes: [ReadWriteOnce]
+            resources:
+              requests:
+                storage: 1Gi
+
+    - name: Wait for PVC Bound
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig }}"
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: ceph-rbd-smoke-test
+        namespace: default
+      register: pvc_state
+      until: pvc_state.resources[0].status.phase == "Bound"
+      retries: 24
+      delay: 5
+
+    - name: Clean up smoke-test PVC
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: absent
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: ceph-rbd-smoke-test
+        namespace: default

@@ -1,0 +1,40 @@
+# Bootstrap "app-of-apps" pattern: ArgoCD watches this manifest and pulls the
+# rest of cluster config from a customer-supplied Git repo. The wizard offers
+# this only when addons.gitops == "argocd".
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: cluster
+  namespace: argocd
+spec:
+  description: Bootstrap project for {{ .Cluster.Name }}
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: '*'
+  sourceRepos: ['*']
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cluster-bootstrap
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: cluster
+  source:
+    repoURL: {{ .Cluster.GitOpsRepo }}        # supplied by the wizard
+    targetRevision: {{ .Cluster.GitOpsRef }}
+    path: clusters/{{ .Cluster.Name }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

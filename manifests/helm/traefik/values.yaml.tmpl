@@ -1,0 +1,50 @@
+{{- /* Traefik values, K3s-default ingress option (alternative to ingress-nginx). */ -}}
+{{- /* Reference: P:\K3s@IDC\manifests\traefik\values.yaml. */ -}}
+deployment:
+  replicas: 2
+
+service:
+  type: LoadBalancer
+  annotations:
+    metallb.universe.tf/address-pool: public-nat
+  spec:
+    loadBalancerIP: "{{ '{{ ingress_lb_ip }}' }}"
+
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+  name: traefik
+
+providers:
+  kubernetesIngress:
+    enabled: true
+  kubernetesCRD:
+    enabled: true
+
+additionalArguments:
+  - "--serversTransport.insecureSkipVerify=true"
+  - "--log.level=INFO"
+  - "--accesslog=true"
+
+ports:
+  web:
+    port: 80
+    expose:
+      default: true
+  websecure:
+    port: 443
+    expose:
+      default: true
+  traefik:
+    port: 9000
+
+ingressRoute:
+  dashboard:
+    enabled: true
+    entryPoints:
+      - websecure
+
+tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: Exists
+    effect: NoSchedule
