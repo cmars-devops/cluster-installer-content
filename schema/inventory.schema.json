@@ -14,6 +14,11 @@
         "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,30}[a-z0-9]$" },
         "domain": { "type": "string", "format": "hostname" },
         "timezone": { "type": "string", "default": "Asia/Seoul" },
+        "topology": {
+          "enum": ["ceph-only", "k8s-only", "combined"],
+          "default": "k8s-only",
+          "description": "Which kind of cluster to install. Ceph-only and K8s-only are independent installs; combined sequences Ceph-then-K8s-then-CSI in one run."
+        },
         "kubernetes": {
           "type": "object",
           "required": ["distro", "version", "cni"],
@@ -21,7 +26,23 @@
           "properties": {
             "distro": { "enum": ["rke2", "k3s"] },
             "version": { "type": "string" },
-            "cni": { "enum": ["cilium", "canal", "calico"] }
+            "cni": { "enum": ["cilium", "canal", "calico"] },
+            "token": { "type": "string", "description": "Cluster join token. Generated once per cluster; used by added servers/agents to join. Secret." },
+            "kube_vip_interface": { "type": "string", "description": "NIC kube-vip advertises the control-plane VIP on. ESXi vmxnet3: ens192; libvirt virtio: eth0/enp1s0." },
+            "tls_sans": { "type": "array", "items": { "type": "string" }, "description": "Extra SANs added to the API server cert (DNS names or IPs). VIP + node IPs are auto-added." }
+          }
+        },
+        "external_ceph": {
+          "type": "object",
+          "description": "Connection details for an existing Ceph cluster — used when topology=k8s-only and the operator wants ceph-csi to bridge to externally-managed storage.",
+          "required": ["mon_endpoints", "fsid", "client_user", "client_key", "pool"],
+          "additionalProperties": false,
+          "properties": {
+            "mon_endpoints": { "type": "array", "items": { "type": "string" }, "description": "MON v2 addresses, e.g. ['10.10.1.75:3300', '10.10.1.76:3300']" },
+            "fsid": { "type": "string", "description": "Ceph cluster fsid (uuid). Run 'ceph fsid' on a mon." },
+            "client_user": { "type": "string", "description": "Narrow-scope client name, e.g. 'k8s-rbd'." },
+            "client_key": { "type": "string", "description": "client.<user> keyring (raw or base64). Goes into ceph-csi Secret." },
+            "pool": { "type": "string", "description": "RBD pool name, typically 'rbd-pool'." }
           }
         }
       }
