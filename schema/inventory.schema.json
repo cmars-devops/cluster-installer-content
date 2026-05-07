@@ -47,12 +47,17 @@
       "required": ["type", "endpoint"],
       "additionalProperties": true,
       "properties": {
-        "type": { "enum": ["libvirt", "proxmox"] },
-        "endpoint": { "type": "string" },
-        "ssh_key": { "type": "string" },
-        "username": { "type": "string" },
-        "api_token": { "type": "string" },
-        "tls_insecure": { "type": "boolean", "default": false }
+        "type": { "enum": ["libvirt", "proxmox", "esxi"] },
+        "endpoint": { "type": "string", "description": "libvirt URI / Proxmox base URL / ESXi host URL (https://192.168.1.210/)" },
+        "username": { "type": "string", "default": "root" },
+        "ssh_key": { "type": "string", "description": "SSH private key path (libvirt always; ESXi optional alternative to password)" },
+        "api_token": { "type": "string", "description": "Proxmox PVE API token (user@pam!tokenid=secret)" },
+        "password": { "type": "string", "description": "ESXi root password (used for both vSphere API and SSH; never persisted in plaintext outside %LOCALAPPDATA%)" },
+        "tls_insecure": { "type": "boolean", "default": false, "description": "ESXi defaults to self-signed cert; commonly true for lab clusters" },
+        "datastore": { "type": "string", "description": "ESXi datastore for VM disks + seed ISOs (e.g. SSD-RAID0-4Ti-02)" },
+        "iso_datastore": { "type": "string", "description": "ESXi datastore for ISO uploads (often same as datastore)" },
+        "network": { "type": "string", "description": "ESXi port group name (e.g. 'VM Network')" },
+        "advertise_ip": { "type": "string", "description": "Override for the host IP advertised to target VMs (auto-detected if blank)" }
       }
     },
     "nodes": {
