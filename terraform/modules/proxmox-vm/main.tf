@@ -21,6 +21,12 @@ variable "seed_iso_id"     { type = string; description = "Per-node seed ISO alr
 variable "bridge"          { type = string; default = "vmbr0" }
 variable "vlan_id"         { type = number; default = null }
 variable "mac"             { type = string; default = null }
+variable "file_format"     { type = string; default = "qcow2"
+                             validation {
+                               condition     = contains(["qcow2", "raw"], var.file_format)
+                               error_message = "file_format must be 'qcow2' (thin) or 'raw' (thick)."
+                             } }
+variable "discard"         { type = bool;   default = true }   # SSD TRIM passthrough — sensible default for qcow2
 
 resource "proxmox_virtual_environment_vm" "vm" {
   name      = var.name
@@ -50,7 +56,8 @@ resource "proxmox_virtual_environment_vm" "vm" {
     datastore_id = var.datastore_id
     interface    = "scsi0"
     size         = var.disk_gb
-    file_format  = "raw"
+    file_format  = var.file_format
+    discard      = var.discard ? "on" : "ignore"
   }
 
   dynamic "disk" {
@@ -59,7 +66,8 @@ resource "proxmox_virtual_environment_vm" "vm" {
       datastore_id = var.datastore_id
       interface    = "scsi${1 + tonumber(disk.key)}"
       size         = disk.value
-      file_format  = "raw"
+      file_format  = var.file_format
+      discard      = var.discard ? "on" : "ignore"
     }
   }
 
