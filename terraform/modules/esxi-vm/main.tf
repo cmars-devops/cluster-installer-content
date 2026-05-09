@@ -9,54 +9,78 @@ terraform {
 }
 
 # ── Inputs ────────────────────────────────────────────────────────────
-variable "name"           { type = string }
-variable "memory_mb"      { type = number }
-variable "vcpu"           { type = number }
-variable "disk_gb"        { type = number }
-variable "extra_disks_gb" { type = list(number); default = [] }
+variable "name"      { type = string }
+variable "memory_mb" { type = number }
+variable "vcpu"      { type = number }
 
-# Datastore the VM's virtual disks live on. May differ from iso_datastore.
-variable "datastore"      { type = string }
+# disks: ordered list, [0] is the OS install disk; the rest are blank
+# extras the guest sees as /dev/sd[bcd...]. Each disk has its own size,
+# datastore, and provisioning so heterogeneous storage layouts (e.g.
+# small-fast OS disk on NVMe + bulk data disks on a larger HDD-backed
+# datastore) are expressible without a stack-wide compromise.
+variable "disks" {
+  type = list(object({
+    size_gb      = number
+    datastore    = string
+    provisioning = string
+    label        = string
+  }))
+  validation {
+    condition     = length(var.disks) > 0
+    error_message = "at least one disk is required (the OS install disk)."
+  }
+  validation {
+    condition = alltrue([
+      for d in var.disks : contains(["thin", "thick", "thick-eager"], d.provisioning)
+    ])
+    error_message = "each disk.provisioning must be 'thin', 'thick', or 'thick-eager'."
+  }
+}
+
+# nics: ordered list, [0] is the primary (default route + verify SSH
+# target). Each NIC has its own port-group and pre-allocated MAC.
+variable "nics" {
+  type = list(object({
+    network = string
+    mac     = string
+    label   = string
+  }))
+  validation {
+    condition     = length(var.nics) > 0
+    error_message = "at least one NIC is required."
+  }
+}
 
 # Datastore that hosts the ISOs we attach as CD-ROMs (seed + base).
-variable "iso_datastore"  { type = string }
+variable "iso_datastore" { type = string }
 
 # Datastore-relative path to the seed ISO. Always present:
 #   MicroOS  → Combustion+Ignition (this is the install payload itself).
 #   Agama    → secondary CD carrying SSH keys / hostname / first-boot
 #              hooks; the primary install media is install_iso_path.
+#   Ubuntu   → cidata CD carrying user-data + meta-data (cloud-init NoCloud).
 # Format: "cluster-installer/<run-id>/seed-<host>.iso"
-variable "seed_iso_path"  { type = string }
+variable "seed_iso_path" { type = string }
 
-# Datastore-relative path to the per-node Agama-remastered netinstall
-# ISO. Empty for MicroOS. When set this is mounted as the FIRST cdrom
-# (boot order picks it ahead of the seed disk) so the bootloader's
-# rewritten cmdline drives the install.
-variable "install_iso_path" { type = string; default = "" }
-
-variable "network"        { type = string; description = "vSphere port-group name" }
-variable "mac"            { type = string; default = "" }
-
-# disk_provisioning maps inventory's three-way choice to vSphere's
-# enum: "thin", "thick" (lazy-zeroed), "thick-eager" (eagerZeroedThick).
-variable "disk_provisioning" {
+# Datastore-relative path to the per-node remastered netinstall ISO.
+# Empty for MicroOS. When set this is mounted as the FIRST cdrom (boot
+# order picks it ahead of the seed disk) so the bootloader's rewritten
+# cmdline drives the install.
+variable "install_iso_path" {
   type    = string
-  default = "thin"
-  validation {
-    condition     = contains(["thin", "thick", "thick-eager"], var.disk_provisioning)
-    error_message = "disk_provisioning must be 'thin', 'thick', or 'thick-eager'."
-  }
+  default = ""
 }
 
 # ESXi guest_id determines which paravirtual driver hints vSphere applies.
-# 'opensuse64Guest' is the SUSE-tuned profile (issue #4 in
-# docs/lessons-from-IDC.md — using 'otherLinux64Guest' silently disables
+# 'opensuse64Guest' for SUSE, 'ubuntu64Guest' for Ubuntu — issue #4 in
+# docs/lessons-from-IDC.md (using 'otherLinux64Guest' silently disables
 # vmxnet3 optimisations).
-variable "guest_id" { type = string; default = "opensuse64Guest" }
+variable "guest_id" {
+  type    = string
+  default = "opensuse64Guest"
+}
 
 # ── Datacenter / host resolution ─────────────────────────────────────
-# Standalone ESXi: the synthetic "ha-datacenter" + the host itself.
-# vCenter:        the real DC + a chosen host or cluster.
 data "vsphere_datacenter" "dc" {}
 
 data "vsphere_resource_pool" "rp" {
@@ -64,90 +88,107 @@ data "vsphere_resource_pool" "rp" {
   datacenter_id = data.vsphere_datacenter.dc.id
 }
 
-data "vsphere_datastore" "ds" {
-  name          = var.datastore
-  datacenter_id = data.vsphere_datacenter.dc.id
-}
-
-data "vsphere_network" "net" {
-  name          = var.network
-  datacenter_id = data.vsphere_datacenter.dc.id
-}
-
+# Resolve every distinct datastore referenced by the disks list +
+# the iso_datastore. for_each on a unique-set so duplicates collapse.
 locals {
-  # vSphere disk type strings — module input → provider field.
-  vsphere_disk_type = {
-    thin         = "thin"
-    thick        = "lazy"          # provider calls lazy-zeroed "lazy"
+  disk_datastores = toset([for d in var.disks : d.datastore])
+  nic_networks    = toset([for n in var.nics : n.network])
+}
+data "vsphere_datastore" "by_name" {
+  for_each      = local.disk_datastores
+  name          = each.value
+  datacenter_id = data.vsphere_datacenter.dc.id
+}
+data "vsphere_datastore" "iso_ds" {
+  name          = var.iso_datastore
+  datacenter_id = data.vsphere_datacenter.dc.id
+}
+data "vsphere_network" "by_name" {
+  for_each      = local.nic_networks
+  name          = each.value
+  datacenter_id = data.vsphere_datacenter.dc.id
+}
+
+# vSphere disk type string — provider field for each disk.
+locals {
+  provisioning_to_vsphere = {
+    thin          = "thin"
+    thick         = "lazy"             # provider calls lazy-zeroed "lazy"
     "thick-eager" = "eagerZeroedThick"
-  }[var.disk_provisioning]
+  }
 }
 
 # ── VM resource ───────────────────────────────────────────────────────
 resource "vsphere_virtual_machine" "vm" {
   name             = var.name
   resource_pool_id = data.vsphere_resource_pool.rp.id
-  datastore_id     = data.vsphere_datastore.ds.id
+  # The VM-level datastore is the OS disk's datastore (disks[0]). Per-
+  # disk overrides apply to additional disks via dynamic blocks below.
+  datastore_id = data.vsphere_datastore.by_name[var.disks[0].datastore].id
 
   num_cpus = var.vcpu
   memory   = var.memory_mb
   guest_id = var.guest_id
 
-  # Boot order: CD first so the netinstall ISO claims control on a fresh
-  # disk. After install completes the VM powers off (Agama does this) and
-  # the next power-on falls through to the disk. issue #6 in lessons-
-  # from-IDC.md — explicit boot-order required, otherwise vSphere walks
-  # devices in attach order which is unreliable across vmxnet3 / sata.
-  boot_order = ["cdrom", "disk"]
-  firmware   = "bios"
+  # Boot order: vSphere's BIOS firmware default is
+  # floppy → CD-ROM → HD → network, so a freshly-created VM with the
+  # netinstall ISO attached as CD-ROM #1 boots from CD automatically.
+  # After install completes the VM reboots, finds the OS disk
+  # bootable, and falls through to disk on the next power-on without
+  # any extra config. The hashicorp/vsphere provider does NOT expose a
+  # top-level `boot_order` argument (issue #6 in docs/lessons-from-IDC.md
+  # was a misread — the original cluster setup used a different
+  # provider). For explicit control we'd use `extra_config = {
+  # "bios.bootOrder" = "..." }` but the default suits dev-vm.
+  firmware = "bios"
 
-  network_interface {
-    network_id   = data.vsphere_network.net.id
-    adapter_type = "vmxnet3"
-    use_static_mac = var.mac != ""
-    mac_address    = var.mac != "" ? var.mac : null
-  }
-
-  # Root disk — empty, formatted by the installer.
-  disk {
-    label            = "disk0"
-    size             = var.disk_gb
-    eagerly_scrub    = local.vsphere_disk_type == "eagerZeroedThick"
-    thin_provisioned = local.vsphere_disk_type == "thin"
-  }
-
-  # Optional extra disks (Ceph OSDs typically).
-  dynamic "disk" {
-    for_each = { for i, gb in var.extra_disks_gb : i => gb }
+  # NICs — one network_interface block per entry. nic[0] is the primary
+  # default-route holder by netplan convention; entries beyond [0] are
+  # configured by the guest OS but the wizard doesn't manage their
+  # routing rules.
+  dynamic "network_interface" {
+    for_each = { for i, n in var.nics : i => n }
     content {
-      label            = "disk${disk.key + 1}"
-      size             = disk.value
-      unit_number      = disk.key + 1
-      eagerly_scrub    = local.vsphere_disk_type == "eagerZeroedThick"
-      thin_provisioned = local.vsphere_disk_type == "thin"
+      network_id     = data.vsphere_network.by_name[network_interface.value.network].id
+      adapter_type   = "vmxnet3"
+      use_static_mac = network_interface.value.mac != ""
+      mac_address    = network_interface.value.mac != "" ? network_interface.value.mac : null
+    }
+  }
+
+  # Disks — one disk block per entry. [0] is the OS install disk; rest
+  # are blank extras. Each disk picks its own datastore via
+  # `datastore_id` and its own thin/thick mode via `eagerly_scrub` /
+  # `thin_provisioned`.
+  dynamic "disk" {
+    for_each = { for i, d in var.disks : i => d }
+    content {
+      label = disk.value.label != "" ? disk.value.label : "disk${disk.key}"
+      size  = disk.value.size_gb
+      # Place this disk on its own datastore. Empty in inventory →
+      # tfvars renderer fills with the VM's primary datastore.
+      datastore_id = data.vsphere_datastore.by_name[disk.value.datastore].id
+      unit_number  = disk.key
+      eagerly_scrub    = local.provisioning_to_vsphere[disk.value.provisioning] == "eagerZeroedThick"
+      thin_provisioned = local.provisioning_to_vsphere[disk.value.provisioning] == "thin"
     }
   }
 
   # CD-ROM 1 — primary boot media.
-  # Agama nodes: the per-node remastered netinstall ISO (kernel cmdline
-  # carries inst.auto pointing at the orchestrator's HTTP profile).
-  # MicroOS nodes: the Combustion seed ISO (one CD-ROM is enough — the
-  # qcow2 backing handles the install payload and Combustion provides
-  # first-boot config).
+  # Agama nodes: the per-node remastered netinstall ISO.
+  # MicroOS nodes: the Combustion seed ISO.
+  # Ubuntu nodes: the (shared) live-server install ISO.
   cdrom {
-    datastore_id = data.vsphere_datastore.ds.id
+    datastore_id = data.vsphere_datastore.iso_ds.id
     path         = var.install_iso_path != "" ? var.install_iso_path : var.seed_iso_path
   }
 
-  # CD-ROM 2 — secondary, only for Agama nodes. Carries the Combustion
-  # script + SSH keys + hostname so the same first-boot script we use
-  # on libvirt continues to apply on ESXi. For MicroOS the install_iso
-  # path is empty and we'd be doubling up CD #1; skip the second drive
-  # via the dynamic block.
+  # CD-ROM 2 — secondary, only when install_iso_path is set (Agama,
+  # Ubuntu). Carries either the Combustion seed or the cidata.
   dynamic "cdrom" {
     for_each = var.install_iso_path != "" ? [1] : []
     content {
-      datastore_id = data.vsphere_datastore.ds.id
+      datastore_id = data.vsphere_datastore.iso_ds.id
       path         = var.seed_iso_path
     }
   }

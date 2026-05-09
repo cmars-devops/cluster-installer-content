@@ -1,0 +1,104 @@
+#cloud-config
+# Ubuntu Server autoinstall (Subiquity + cloud-init NoCloud).
+# Rendered per node by app/internal/seed and served from the wizard's
+# ephemeral HTTP server at:
+#   http://<host>:<port>/profiles/<hostname>/user-data
+#
+# The Ubuntu live-server installer is pointed at this URL via the kernel
+# cmdline injected during ISO remaster (ESXi) or direct kernel boot
+# (libvirt):
+#   autoinstall ds=nocloud-net;s=http://<host>:<port>/profiles/<hostname>/
+autoinstall:
+  version: 1
+  # Skip every interactive prompt.
+  interactive-sections: []
+  refresh-installer:
+    update: false
+  apt:
+    geoip: true
+    preserve_sources_list: false
+
+  identity:
+    # Subiquity requires identity.password to be SHA-512 crypt. Without a
+    # native Go SHA-512-crypt impl the wizard plants a deliberately-disabled
+    # placeholder hash here; the real cluster password (Step 1) is applied
+    # via `chpasswd` in late-commands below, which accepts plain text.
+    # Result: console login works iff the operator entered a password,
+    # otherwise the user is SSH-key-only.
+    hostname: {{ .Node.Hostname }}
+    username: triangles
+    password: "$6$rounds=4096$wizardPlaceholder$pNwxF6TKrPgKLLPQuC9vH8jDrJl5lhhf3AKrEd0xu3UOMskPSpHGE4dq1pV0VK0jQbJSbmBr8GJYFSpD7Lf3K1"
+
+  ssh:
+    install-server: true
+{{- if .Node.SSHAuthorizedKeys }}
+    allow-pw: false
+    authorized-keys:
+{{- range .Node.SSHAuthorizedKeys }}
+      - "{{ . }}"
+{{- end }}
+{{- else }}
+    allow-pw: true
+{{- end }}
+
+  network:
+    version: 2
+    ethernets:
+      {{ .Node.NetworkInterface }}:
+        addresses:
+          - "{{ .Node.IP }}/{{ .Network.PrefixLen }}"
+        routes:
+          - to: default
+            via: {{ .Network.Gateway }}
+        nameservers:
+          addresses:
+            [{{- range $i, $n := .Network.Nameservers }}{{ if $i }}, {{ end }}"{{ $n }}"{{- end }}]
+
+  # Single-disk install on the smallest non-removable block device. This
+  # leaves any extra disks (OSD data devices on ceph-osd nodes) intact
+  # for cephadm to claim later.
+  #
+  # sizing-policy: all — give root LV the entire VG, no leftover free
+  # space. Subiquity's default policy ('scaled') only allocates ~50%
+  # of the VG to root and reserves the rest for snapshots / future
+  # grow, which surprises operators who see `df -h` show <half the
+  # disk and assume install was misconfigured. 'all' matches every
+  # other distro's expectation: "give me the whole disk".
+  # Operators who want to reserve space can lvextend later.
+  storage:
+    layout:
+      name: lvm
+      match:
+        size: smallest
+      sizing-policy: all
+
+  packages:
+    - chrony
+    - lvm2
+    - nfs-common
+    - open-iscsi
+    - curl
+    - jq
+{{- if .Node.NeedsCeph }}
+    - ceph-common
+    - podman
+    - python3
+{{- end }}
+
+  late-commands:
+    - "curtin in-target -- bash -c 'echo {{ .Node.Hostname }} > /etc/hostname'"
+    - "curtin in-target -- bash -c 'sed -i \"/127.0.1.1/d\" /etc/hosts && echo \"127.0.1.1 {{ .Node.Hostname }}\" >> /etc/hosts'"
+    - "curtin in-target -- bash -c 'echo \"triangles ALL=(ALL) NOPASSWD:ALL\" > /etc/sudoers.d/90-triangles && chmod 440 /etc/sudoers.d/90-triangles'"
+{{- range .Cluster.SSHImportGitHub }}
+    # Pull SSH keys from github.com/{{ . }}.keys and append to triangles' authorized_keys.
+    # ssh-import-id-gh ships in the Subiquity install env and on the installed system.
+    - "curtin in-target -- bash -c 'install -d -m 700 -o triangles -g triangles /home/triangles/.ssh && sudo -u triangles ssh-import-id-gh {{ . }} || true'"
+{{- end }}
+{{- if .Cluster.NodePassword }}
+    # Apply the cluster-wide console password the operator entered in Step 1.
+    # chpasswd accepts plain text, so we don't need a SHA-512 crypt impl.
+    - "curtin in-target -- bash -c 'echo \"triangles:{{ .Cluster.NodePassword }}\" | chpasswd'"
+    - "curtin in-target -- bash -c 'echo \"root:{{ .Cluster.NodePassword }}\" | chpasswd'"
+{{- end }}
+
+  shutdown: reboot

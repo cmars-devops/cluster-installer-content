@@ -22,28 +22,49 @@ provider "vsphere" {
 # ── Inputs ────────────────────────────────────────────────────────────
 variable "vsphere_server"   { type = string }
 variable "vsphere_user"     { type = string }
-variable "vsphere_password" { type = string; sensitive = true }
-variable "tls_insecure"     { type = bool; default = true }
+variable "vsphere_password" {
+  type      = string
+  sensitive = true
+}
+variable "tls_insecure" {
+  type    = bool
+  default = true
+}
 
-# Cluster-level defaults. Per-node overrides (when set) win.
-variable "datastore"     { type = string }
+# Stack-level ISO datastore. VM disk placement is per-disk (each disk
+# in the disks list carries its own datastore — the tfvars renderer
+# fills it with the VM's primary datastore when the operator left it
+# blank). `network` is also stack-level: a default port-group used for
+# any NIC entry that left `network` blank.
 variable "iso_datastore" { type = string }
 variable "network"       { type = string }
 
 variable "nodes" {
   type = list(object({
-    name              = string
-    memory_mb         = number
-    vcpu              = number
-    disk_gb           = number
-    extra_disks_gb    = list(number)
-    seed_iso_path     = string                       # datastore-relative
-    install_iso_path  = optional(string, "")          # per-node Agama remaster (Leap/Tumbleweed)
-    mac               = optional(string, "")
-    datastore         = optional(string, "")          # per-node placement override
-    iso_datastore     = optional(string, "")
-    disk_provisioning = optional(string, "thin")
-    guest_id          = optional(string, "opensuse64Guest")
+    name             = string
+    memory_mb        = number
+    vcpu             = number
+    # disks: list of disks. [0] is the OS install disk (the only
+    # required entry); rest are blank extras. Each disk carries its own
+    # datastore (the tfvars renderer fills empty values with the VM's
+    # primary datastore) and provisioning mode.
+    disks = list(object({
+      size_gb      = number
+      datastore    = string
+      provisioning = string
+      label        = optional(string, "")
+    }))
+    # nics: list of NICs. [0] is the primary. Each NIC has a port-group
+    # and pre-allocated MAC; the orchestrator hashes (cluster_name,
+    # hostname, nic_index) so re-runs reuse the same MACs.
+    nics = list(object({
+      network = string
+      mac     = string
+      label   = optional(string, "")
+    }))
+    seed_iso_path    = string                                 # datastore-relative
+    install_iso_path = optional(string, "")                    # per-node remaster (Leap/Tumbleweed) or shared (Ubuntu)
+    guest_id         = optional(string, "opensuse64Guest")
   }))
 }
 
@@ -52,23 +73,15 @@ module "vm" {
   for_each = { for n in var.nodes : n.name => n }
   source   = "../../modules/esxi-vm"
 
-  name              = each.value.name
-  memory_mb         = each.value.memory_mb
-  vcpu              = each.value.vcpu
-  disk_gb           = each.value.disk_gb
-  extra_disks_gb    = each.value.extra_disks_gb
-  seed_iso_path     = each.value.seed_iso_path
-  install_iso_path  = each.value.install_iso_path
-  mac               = each.value.mac
-  disk_provisioning = each.value.disk_provisioning
-  guest_id          = each.value.guest_id
-
-  # Per-node datastore + iso_datastore + network override; falls back to
-  # stack-level defaults when blank. Mirrors the libvirt pool/Proxmox
-  # datastore_id pattern so the wizard form is consistent across targets.
-  datastore     = each.value.datastore != "" ? each.value.datastore : var.datastore
-  iso_datastore = each.value.iso_datastore != "" ? each.value.iso_datastore : var.iso_datastore
-  network       = var.network
+  name             = each.value.name
+  memory_mb        = each.value.memory_mb
+  vcpu             = each.value.vcpu
+  disks            = each.value.disks
+  nics             = each.value.nics
+  seed_iso_path    = each.value.seed_iso_path
+  install_iso_path = each.value.install_iso_path
+  guest_id         = each.value.guest_id
+  iso_datastore    = var.iso_datastore
 }
 
 output "node_ips" {

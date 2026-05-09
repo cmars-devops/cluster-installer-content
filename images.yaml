@@ -52,3 +52,34 @@ images:
     url: https://download.opensuse.org/tumbleweed/iso/openSUSE-Tumbleweed-NET-x86_64-Current.iso
     checksum_url: https://download.opensuse.org/tumbleweed/iso/openSUSE-Tumbleweed-NET-x86_64-Current.iso.sha256
     seed_format: agama
+
+  # Ubuntu Server 26.04 LTS — Subiquity-based unattended install via
+  # cloud-init NoCloud datasource (autoinstall ds=nocloud-net;s=URL).
+  # Templates live at content/seeds/autoinstall/{user-data,meta-data}.tmpl.
+  # Kernel and initrd are at /casper/* inside the live-server ISO,
+  # different from openSUSE's /boot/x86_64/loader/*. The kernel_path /
+  # initrd_path fields tell extract.go where to find them.
+  ubuntu-26.04:
+    family: ubuntu
+    version: "26.04"
+    arch: x86_64
+    type: live-server
+    url: https://releases.ubuntu.com/26.04/ubuntu-26.04-live-server-amd64.iso
+    checksum_url: https://releases.ubuntu.com/26.04/SHA256SUMS
+    seed_format: autoinstall
+    kernel_path: casper/vmlinuz
+    initrd_path: casper/initrd
+
+  # Ubuntu Server 24.04 LTS — fallback when 26.04 mirrors are not yet
+  # published. LookupForOS picks 26.04 first via lexicographic descending
+  # sort; pin version="24.04" in the inventory to force this entry.
+  ubuntu-24.04:
+    family: ubuntu
+    version: "24.04"
+    arch: x86_64
+    type: live-server
+    url: https://releases.ubuntu.com/24.04/ubuntu-24.04.2-live-server-amd64.iso
+    checksum_url: https://releases.ubuntu.com/24.04/SHA256SUMS
+    seed_format: autoinstall
+    kernel_path: casper/vmlinuz
+    initrd_path: casper/initrd
