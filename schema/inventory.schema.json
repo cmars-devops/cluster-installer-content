@@ -11,7 +11,7 @@
       "required": ["name", "domain", "kubernetes"],
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,30}[a-z0-9]$" },
+        "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9-]{1,30}[A-Za-z0-9]$" },
         "domain": { "type": "string", "format": "hostname" },
         "timezone": { "type": "string", "default": "Asia/Seoul" },
         "topology": {
@@ -89,7 +89,15 @@
         "required": ["hostname", "ip", "roles", "os"],
         "additionalProperties": false,
         "properties": {
-          "hostname": { "type": "string" },
+          "hostname": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$",
+            "description": "RFC 1123 hostname. Lowercase recommended. NO @ / _ / spaces — vSphere display label goes in display_name."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Optional vSphere inventory label. Empty = reuse hostname. Set this for friendly labels like 'CEPH-CORE-01@Ubuntu-2604' while the OS keeps a clean RFC 1123 hostname."
+          },
           "ip": { "type": "string", "format": "ipv4" },
           "cluster_ip": { "type": "string", "format": "ipv4", "description": "Optional Ceph cluster network IP (C-Net) for OSD nodes" },
           "primary_mac": { "type": "string", "pattern": "^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$", "description": "Discovered after VM creation; bound in NM connection to survive multi-NIC additions" },
@@ -99,7 +107,8 @@
             "minItems": 1,
             "items": { "enum": ["control-plane", "etcd", "worker", "ceph-mon", "ceph-mgr", "ceph-osd", "ceph-mds", "ceph-rgw"] }
           },
-          "os": { "enum": ["microos", "leap", "tumbleweed"] },
+          "os": { "enum": ["microos", "leap", "tumbleweed", "ubuntu"] },
+          "os_version": { "type": "string", "description": "Optional pinned version (e.g. Ubuntu '24.04' or '26.04'). Empty = newest catalog entry for this family." },
           "cpu": { "type": "integer", "minimum": 1, "default": 2 },
           "memory_gb": { "type": "integer", "minimum": 1, "default": 4 },
           "disk_gb": { "type": "integer", "minimum": 10, "default": 40 },
