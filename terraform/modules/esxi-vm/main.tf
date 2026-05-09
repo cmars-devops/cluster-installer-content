@@ -130,17 +130,34 @@ resource "vsphere_virtual_machine" "vm" {
   memory   = var.memory_mb
   guest_id = var.guest_id
 
-  # Boot order: vSphere's BIOS firmware default is
-  # floppy → CD-ROM → HD → network, so a freshly-created VM with the
-  # netinstall ISO attached as CD-ROM #1 boots from CD automatically.
-  # After install completes the VM reboots, finds the OS disk
-  # bootable, and falls through to disk on the next power-on without
-  # any extra config. The hashicorp/vsphere provider does NOT expose a
-  # top-level `boot_order` argument (issue #6 in docs/lessons-from-IDC.md
-  # was a misread — the original cluster setup used a different
-  # provider). For explicit control we'd use `extra_config = {
-  # "bios.bootOrder" = "..." }` but the default suits dev-vm.
+  # Boot order: vSphere BIOS default is floppy → CD → HD → network.
+  # A single-disk VM hits CD first and boots fine. BUT multi-disk VMs
+  # (Ceph OSD nodes carrying 2-4 SCSI disks for data/db/wal) trip a
+  # BIOS NVRAM caching quirk: the SCSI bus scan runs long enough on
+  # first power-on that CD-ROM enumeration times out, BIOS learns
+  # "no CD present" and skips it on subsequent boots — VM falls
+  # through to HDD (no boot record) → network → PXE. CORE nodes (1
+  # disk) don't show this behavior.
+  #
+  # Fix: extra_config below pins the device class order AND gives the
+  # SCSI subsystem a 5s grace period so CD enumeration completes
+  # before BIOS picks a boot device. This costs 5s on every power-on
+  # but is bullet-proof — required for any multi-disk Ceph node and
+  # harmless for single-disk dev-vm / CORE.
   firmware = "bios"
+
+  extra_config = {
+    # Restrict BIOS to try CD then HD then network in that order.
+    # 'allow:cd,hd,net' is the documented vSphere syntax — without
+    # restricting, BIOS firmware may include floppy + serial + USB
+    # in the search and skip CD when bus scan is slow.
+    "bios.bootDeviceClasses" = "allow:cd,hd,net"
+    # Hold POST 5s before picking a boot device so the SCSI bus has
+    # time to enumerate every disk + the IDE CD-ROM controller has
+    # time to mount the attached ISO. Default 0ms is too tight for
+    # multi-disk VMs on busy datastores.
+    "bios.bootDelay" = "5000"
+  }
 
   # NICs — one network_interface block per entry. nic[0] is the primary
   # default-route holder by netplan convention; entries beyond [0] are
