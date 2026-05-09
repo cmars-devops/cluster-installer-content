@@ -78,6 +78,7 @@
         "datastore": { "type": "string", "description": "ESXi datastore for VM disks + seed ISOs (e.g. SSD-RAID0-4Ti-02)" },
         "iso_datastore": { "type": "string", "description": "ESXi datastore for ISO uploads (often same as datastore)" },
         "network": { "type": "string", "description": "ESXi port group name (e.g. 'VM Network')" },
+        "cluster_network": { "type": "string", "description": "Optional Ceph cluster-network port group (e.g. 'Storage-Net'). Required ONLY when any node carries cluster_ip — without this, cluster_ip values are ignored at the VM level (no second NIC attached)." },
         "advertise_ip": { "type": "string", "description": "Override for the host IP advertised to target VMs (auto-detected if blank)" }
       }
     },
